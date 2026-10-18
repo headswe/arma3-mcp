@@ -287,12 +287,63 @@ def crop_svg(
         return True
 
     for item in overlays:
+        kind = str(item.get("kind", "unit"))
+        if kind == "waypoint_route":
+            points = item.get("points", [])
+            if not isinstance(points, list) or len(points) < 2:
+                continue
+            route_points = [
+                (float(point[0]), world_height - float(point[1]))
+                for point in points
+                if isinstance(point, (list, tuple)) and len(point) >= 2
+            ]
+            paths = _clip_polyline(route_points, clip)
+            if not paths:
+                continue
+            side = str(item.get("side", "")).upper()
+            color = _SIDES.get(side, "#555555")
+            route = ET.SubElement(overlay, f"{{{SVG_NS}}}g")
+            title = ET.SubElement(route, f"{{{SVG_NS}}}title")
+            title.text = f"waypoint route: {item.get('name', '')} ({side})"
+            for path_points in paths:
+                ET.SubElement(route, f"{{{SVG_NS}}}polyline", {
+                    "points": _format_points(path_points),
+                    "fill": "none",
+                    "stroke": color,
+                    "stroke-width": f"{meters_per_pixel * 2.5:.3f}",
+                    "stroke-opacity": "0.85",
+                    "stroke-dasharray": f"{meters_per_pixel * 7:.3f} {meters_per_pixel * 4:.3f}",
+                })
+            waypoint_types = item.get("waypoint_types", [])
+            for index, point in enumerate(points[1:]):
+                if not isinstance(point, (list, tuple)) or len(point) < 2:
+                    continue
+                x, y = float(point[0]), world_height - float(point[1])
+                if not _inside(x, y, clip):
+                    continue
+                waypoint = ET.SubElement(
+                    route, f"{{{SVG_NS}}}g", {"transform": f"translate({x:g} {y:g})"}
+                )
+                waypoint_title = ET.SubElement(waypoint, f"{{{SVG_NS}}}title")
+                waypoint_type = (
+                    str(waypoint_types[index])
+                    if isinstance(waypoint_types, list) and index < len(waypoint_types)
+                    else "waypoint"
+                )
+                waypoint_title.text = f"{item.get('name', '')}: {index + 1} {waypoint_type}"
+                ET.SubElement(waypoint, f"{{{SVG_NS}}}circle", {
+                    "cx": "0", "cy": "0", "r": f"{radius * 0.8:.3f}",
+                    "fill": "#ffffff", "stroke": color,
+                    "stroke-width": f"{meters_per_pixel * 2:.3f}",
+                })
+                add_label(waypoint, f"{index + 1}: {waypoint_type}")
+            continue
+
         position = item.get("pos", [])
         if len(position) < 2:
             continue
         x, world_y = float(position[0]), float(position[1])
         y = world_height - world_y
-        kind = str(item.get("kind", "unit"))
         marker_shape = str(item.get("shape", "")).upper()
         marker_size = item.get("size", [])
         intersects = _inside(x, y, clip)

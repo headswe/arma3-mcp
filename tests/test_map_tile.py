@@ -17,6 +17,31 @@ SVG_NS = "{http://www.w3.org/2000/svg}"
 
 
 class MapTileTest(unittest.TestCase):
+    def test_draws_and_clips_group_waypoint_routes(self):
+        image = crop_svg(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"/>',
+            view_box=(20, 20, 80, 80),
+            output_size=(300, 300),
+            overlays=[{
+                "kind": "waypoint_route",
+                "name": "Alpha",
+                "side": "WEST",
+                "points": [[10, 60], [50, 60], [90, 60]],
+                "waypoint_types": ["MOVE", "SAD"],
+            }],
+            world_height=100,
+            show_labels=True,
+        )
+        root = ET.fromstring(image)
+        overlay = root.find(f"{SVG_NS}g[@id='a3mcp-overlay']")
+        self.assertIsNotNone(overlay)
+        route_line = overlay.find(f".//{SVG_NS}polyline")
+        self.assertIsNotNone(route_line)
+        self.assertEqual(route_line.get("points"), "20.000,40.000 50.000,40.000 80.000,40.000")
+        self.assertEqual(route_line.get("stroke"), "#2864dc")
+        self.assertEqual(len(overlay.findall(f".//{SVG_NS}circle")), 1)
+        self.assertEqual([text.text for text in overlay.findall(f".//{SVG_NS}text")], ["1: MOVE"])
+
     def test_crops_map_geometry_and_places_world_coordinate_overlays(self):
         source = """<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
           <defs><linearGradient id="land"><stop stop-color="#ddd"/></linearGradient></defs>

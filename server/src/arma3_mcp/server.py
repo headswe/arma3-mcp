@@ -845,11 +845,13 @@ async def map_tile(
     max_size: int = 1024,
     include_dead: bool = False,
     labels: bool = False,
+    show_waypoints: bool = False,
 ) -> list[TextContent | ImageContent]:
-    """Return a cropped terrain image with live units, vehicles and map markers.
+    """Return a cropped terrain image with live units, vehicles, markers, and optional AI routes.
 
     Coordinates use Arma world metres: top_left is [min_x, max_y] and bottom_right is
     [max_x, min_y]. The matching diag_exportTerrainSvg file must be in the configured SVG folder.
+    Set show_waypoints=true to draw group routes and waypoint locations.
     """
     if not isinstance(top_left, (list, tuple)) or not isinstance(bottom_right, (list, tuple)):
         raise ToolError("top_left and bottom_right must each be [x, y]")
@@ -871,7 +873,7 @@ async def map_tile(
 
     snapshot = await _run(
         """
-params ["_left", "_bottom", "_right", "_top", "_includeDead"];
+params ["_left", "_bottom", "_right", "_top", "_includeDead", "_showWaypoints"];
 private _inside = {
     params ["_pos"];
     count _pos >= 2 && {(_pos select 0) >= _left} && {(_pos select 0) <= _right}
@@ -891,6 +893,11 @@ private _markers = allMapMarkers select {
         && {(_pos select 0) - _extent <= _right}
         && {(_pos select 1) + _extent >= _bottom}
         && {(_pos select 1) - _extent <= _top}
+};
+private _routes = if (_showWaypoints) then {
+    allGroups select {count units _x > 0 && {count waypoints _x > 0}}
+} else {
+    []
 };
 [
     worldName,
@@ -917,14 +924,32 @@ private _markers = allMapMarkers select {
             ["pos", markerPos _x],
             ["size", markerSize _x], ["dir", markerDir _x]
         ]
+    },
+    _routes apply {
+        private _group = _x;
+        private _points = [getPosATL (leader _group)];
+        private _types = [];
+        private _currentWaypoint = currentWaypoint _group;
+        {
+            if ((_x select 1) >= _currentWaypoint) then {
+                private _waypoint = _x select 0;
+                _points pushBack (waypointPosition [_group, _waypoint]);
+                _types pushBack (waypointType [_group, _waypoint]);
+            };
+        } forEach (waypoints _group);
+        createHashMapFromArray [
+            ["kind", "waypoint_route"], ["name", groupId _group],
+            ["side", (side _group) call _sideName], ["points", _points],
+            ["waypoint_types", _types]
+        ]
     }
 ]
 """,
-        [left, bottom, right, top, include_dead],
+        [left, bottom, right, top, include_dead, show_waypoints],
         scheduled=True,
         timeout=45.0,
     )
-    world, world_size, units, vehicles, markers = snapshot
+    world, world_size, units, vehicles, markers, routes = snapshot
     try:
         svg_path = find_world_svg(map_svg_dir, str(world))
     except FileNotFoundError as exc:
@@ -952,8 +977,10 @@ private _markers = allMapMarkers select {
     image_width = max(1, round(max_size * crop_width / max(crop_width, crop_height)))
     image_height = max(1, round(max_size * crop_height / max(crop_width, crop_height)))
     overlays = [*units, *vehicles, *markers]
+    if show_waypoints:
+        overlays.extend(routes)
     icon_cache: dict[str, str | None] = {}
-    for item in overlays:
+    for item in [*units, *vehicles, *markers]:
         icon = str(item.get("icon", ""))
         if icon not in icon_cache:
             try:
@@ -990,6 +1017,8 @@ private _markers = allMapMarkers select {
         "Map features include roads, terrain, water and contours. Overlay legend: blue=WEST, red=EAST, "
         "green=GUER, purple=CIV, gray=dead; units are circles, vehicles diamonds, markers use their configured color."
     )
+    if show_waypoints:
+        summary += " Group routes and remaining waypoints are drawn as dashed side-colored lines and numbered points."
     return [
         TextContent(type="text", text=summary),
         ImageContent(
