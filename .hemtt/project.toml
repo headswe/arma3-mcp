@@ -1,0 +1,11 @@
+name = "Arma 3 MCP"
+author = "headswe"
+prefix = "arma3_mcp"
+mainprefix = "z"
+
+[version]
+major = 0
+minor = 1
+patch = 0
+build = 0
+git_hash = 0
