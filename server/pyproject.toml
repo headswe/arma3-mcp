@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "arma3-mcp"
+version = "0.1.0"
+description = "MCP server that runs SQF in a live Arma 3 game and returns the results as JSON"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "headswe" }]
+dependencies = ["mcp>=1.10"]
+
+[project.scripts]
+arma3-mcp = "arma3_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/arma3_mcp"]
