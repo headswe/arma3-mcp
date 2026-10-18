@@ -93,7 +93,7 @@ Options (each also has an environment variable):
 | `list_players` | Name, UID, owner id, netId, side, group, role, position, vehicle, damage. |
 | `list_units` | Units, filtered by side, distance to an object or position, class, players/AI, dead. |
 | `list_vehicles` | Vehicles with crew, fuel and damage; same filters. |
-| `list_groups` | Callsign, side, leader, unit counts, behaviour, combat mode, waypoints. |
+| `list_groups` | Callsign, side, leader, unit counts, behaviour, combat mode, position, and waypoint details. |
 | `get_object` | Everything about one object: class, parents, position, grid, crew, animation, loadout, variables. |
 | `map_tile` | A cropped terrain image with current units, vehicles and markers, clipped to world-coordinate bounds. |
 | `get_variable` / `set_variable` / `list_variables` | Variables in mission/ui/profile/parsing namespaces or on an object. |
@@ -119,7 +119,7 @@ Objects are referred to by netId (`"2:345"`, as the list tools return them), a g
 {"top_left": [3000, 6000], "bottom_right": [5000, 4000], "max_size": 1024}
 ```
 
-The tool clips the world's `diag_exportTerrainSvg` export to those bounds, then overlays side-colored units, vehicles and map markers from the running mission. When an object's Arma config references a PAA icon, the server resolves that path to the matching PNG in the icon folder and embeds it in the map; overlays without a matching PNG keep their standard shape. Set `ARMA3_ICON_DIR` or `--icon-dir` to use a different extracted icon folder. Terrain roads, vegetation, water and contour lines come from the SVG. `max_size` sets the longest image edge (128-2048 px); `labels=true` adds bold, high-contrast names for live overlays, and `include_dead=true` includes dead infantry. By default it searches `svg/tile-svg/<worldName>.svg` relative to the checkout; set `ARMA3_MAP_SVG_DIR` or `--map-svg-dir` to use another folder. The SVG filenames should match the Arma world name (case-insensitive). Export files are not bundled with the package: provide them from `diag_exportTerrainSvg`. No PAA extraction or network map service is needed for the terrain background.
+The tool clips the world's `diag_exportTerrainSvg` export to those bounds, then overlays side-colored units, vehicles and map markers from the running mission. When an object's Arma config references a PAA icon, the server resolves that path to the matching PNG in the icon folder and embeds it in the map; directional marker icons are rotated according to their Arma marker heading. Overlays without a matching PNG keep their standard shape. Set `ARMA3_ICON_DIR` or `--icon-dir` to use a different extracted icon folder. Terrain roads, vegetation, water and contour lines come from the SVG. `max_size` sets the longest image edge (128-2048 px); `labels=true` adds bold, high-contrast names for live overlays, and `include_dead=true` includes dead infantry. By default it searches `svg/tile-svg/<worldName>.svg` relative to the checkout; set `ARMA3_MAP_SVG_DIR` or `--map-svg-dir` to use another folder. The SVG filenames should match the Arma world name (case-insensitive). Export files are not bundled with the package: provide them from `diag_exportTerrainSvg`. No PAA extraction or network map service is needed for the terrain background.
 
 ### `execute_sqf`
 
@@ -134,6 +134,10 @@ The tool clips the world's `diag_exportTerrainSvg` export to those bounds, then 
 - `throw` is caught and returned as `{"ok": false, "error": ...}`. Code that does not compile returns an error too. Other script errors only reach the RPT log; when the log is on the same machine as the MCP server, the new error lines come back as `rpt_errors`.
 - `//` and `/* */` comments are removed before compiling; `#define` and `#include` are not available.
 - `"target"` runs the code on another machine in multiplayer: `"server"`, a client's owner id, or a player's name or UID. The code is sent there as code (with `remoteExecCall`), so the client needs nothing installed; a mission whose `CfgRemoteExec` is in whitelist mode has to allow `call` to clients and `a3mcp_fnc_remoteResult` to the server.
+- An `ok` result only confirms the SQF request completed; it does not prove the intended in-game effect occurred. Verify important state changes with the relevant inspection tools.
+- `list_groups` reports each waypoint's index, type, position, and completion radius. Inspect existing waypoints before replacing or extending a group's route so stale waypoints do not redirect it.
+- `create_marker` takes `direction` as a heading in degrees. Use `list_markers` to confirm the stored `dir` for directional markers; the marker text does not set its orientation.
+- For helicopter insertion, pair a transport group's `TR UNLOAD` waypoint with a passenger group's `UNLOAD` waypoint at the same landing zone, synchronize the waypoints, and place the passenger group's post-unload route after `UNLOAD`. Confirm passengers have actually left the aircraft and reached the intended landing area before reporting the insertion complete.
 
 ## Building
 

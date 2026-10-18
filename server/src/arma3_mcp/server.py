@@ -48,7 +48,20 @@ Controls a running Arma 3 game through the arma3_mcp extension.
   server anyway), a client owner id, or a player name/UID runs code on that machine instead.
 - Script errors are reported in the RPT log: execute_sqf adds new error lines as rpt_errors when the
   log is on this machine, and read_rpt reads it.
+- An ok result from execute_sqf only means the SQF request completed; it does not prove the intended
+  game-state change happened. Verify important mutations with the relevant inspection tools before
+  reporting success.
+- For AI movement, inspect existing waypoints before changing a group's route. list_groups reports
+  waypoint indices, types, and positions. Avoid leaving stale exit or attack waypoints ahead of the
+  intended route.
+- create_marker direction is a heading in degrees, not a compass label. Check list_markers' dir
+  value after creating a directional marker instead of assuming its orientation from its text.
+- For helicopter transport insertion, use a TR UNLOAD waypoint for the transport group and a matching
+  UNLOAD waypoint for the passenger group at the same LZ, synchronize the two waypoints, and put the
+  passengers' post-unload route after UNLOAD. Do not report insertion complete until inspection
+  confirms the passengers are no longer in the helicopter and are at the intended landing area.
 - map_tile clips a diag_exportTerrainSvg map to world bounds and overlays live tactical objects.
+  Extracted config icons are used when available; directional marker icons follow markerDir.
 - Check game_status first if requests time out.
 """
 
@@ -325,7 +338,11 @@ createHashMapFromArray [
 
 @mcp.tool()
 async def list_groups(side: str | None = None, limit: int = 100) -> dict:
-    """List groups: callsign, side, leader, unit counts, behaviour, combat mode, waypoints, position."""
+    """List groups with unit counts, behaviour, combat mode, position, and waypoint details.
+
+    Each waypoint includes its index, type, position, and completion radius. Indices can be used
+    with currentWaypoint when inspecting or changing a group's active route.
+    """
     return await _run(
         """
 params ["_side", "_limit"];
@@ -334,21 +351,33 @@ if (_side != "") then { _list = _list select { ((side _x) call _sideName) == _si
 createHashMapFromArray [
     ["total", count _list],
     ["groups", (_list select [0, _limit]) apply {
-        private _leader = leader _x;
+        private _group = _x;
+        private _leader = leader _group;
+        private _waypointDetails = [];
+        {
+            private _waypoint = _x;
+            _waypointDetails pushBack createHashMapFromArray [
+                ["index", _forEachIndex],
+                ["type", waypointType _waypoint],
+                ["pos", waypointPosition _waypoint call _round],
+                ["completion_radius", waypointCompletionRadius _waypoint]
+            ];
+        } forEach (waypoints _group);
         createHashMapFromArray [
-            ["net_id", netId _x],
-            ["id", groupId _x],
-            ["side", (side _x) call _sideName],
+            ["net_id", netId _group],
+            ["id", groupId _group],
+            ["side", (side _group) call _sideName],
             ["leader", if (isNull _leader) then { "" } else { name _leader }],
             ["leader_net_id", netId _leader],
-            ["units", count units _x],
-            ["alive", { alive _x } count units _x],
-            ["players", { isPlayer _x } count units _x],
-            ["behaviour", combatBehaviour _x],
-            ["combat_mode", combatMode _x],
-            ["formation", formation _x],
-            ["waypoints", count waypoints _x],
-            ["current_waypoint", currentWaypoint _x],
+            ["units", count units _group],
+            ["alive", { alive _x } count units _group],
+            ["players", { isPlayer _x } count units _group],
+            ["behaviour", combatBehaviour _group],
+            ["combat_mode", combatMode _group],
+            ["formation", formation _group],
+            ["waypoints", count waypoints _group],
+            ["current_waypoint", currentWaypoint _group],
+            ["waypoint_details", _waypointDetails],
             ["pos", if (isNull _leader) then { [] } else { getPosATL _leader call _round }]
         ]
     }]

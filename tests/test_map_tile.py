@@ -105,7 +105,7 @@ class MapTileTest(unittest.TestCase):
                     "icon_data": "data:image/png;base64," + base64.b64encode(icon_png).decode("ascii"),
                 },
                 {
-                    "kind": "marker", "name": "objective", "shape": "ICON", "pos": [60, 50],
+                    "kind": "marker", "name": "objective", "shape": "ICON", "pos": [60, 50], "dir": 167,
                     "icon_data": "data:image/png;base64," + base64.b64encode(icon_png).decode("ascii"),
                 },
             ],
@@ -116,6 +116,7 @@ class MapTileTest(unittest.TestCase):
         self.assertIsNotNone(icon)
         self.assertTrue(icon.get("href", "").startswith("data:image/png;base64,"))
         self.assertEqual(len(root.findall(f".//{SVG_NS}image")), 2)
+        self.assertEqual(root.findall(f".//{SVG_NS}image")[1].get("transform"), "rotate(167)")
         png = resvg_py.svg_to_bytes(svg_string=image, width=100, height=100)
         self.assertEqual(png[:8], b"\x89PNG\r\n\x1a\n")
 

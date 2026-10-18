@@ -274,11 +274,16 @@ def crop_svg(
         icon_data = item.get("icon_data")
         if not isinstance(icon_data, str) or not icon_data.startswith("data:image/png;base64,"):
             return False
-        ET.SubElement(group, f"{{{SVG_NS}}}image", {
+        attributes = {
             "x": f"{-radius:g}", "y": f"{-radius:g}",
             "width": f"{radius * 2:g}", "height": f"{radius * 2:g}",
             "href": icon_data, "preserveAspectRatio": "xMidYMid meet",
-        })
+        }
+        if item.get("kind") == "marker":
+            direction = _number(str(item.get("dir", 0)))
+            if direction:
+                attributes["transform"] = f"rotate({direction:g})"
+        ET.SubElement(group, f"{{{SVG_NS}}}image", attributes)
         return True
 
     for item in overlays:
