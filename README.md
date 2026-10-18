@@ -135,7 +135,7 @@ The tool clips the world's `diag_exportTerrainSvg` export to those bounds, then 
 - `//` and `/* */` comments are removed before compiling; `#define` and `#include` are not available.
 - `"target"` runs the code on another machine in multiplayer: `"server"`, a client's owner id, or a player's name or UID. The code is sent there as code (with `remoteExecCall`), so the client needs nothing installed; a mission whose `CfgRemoteExec` is in whitelist mode has to allow `call` to clients and `a3mcp_fnc_remoteResult` to the server.
 - An `ok` result only confirms the SQF request completed; it does not prove the intended in-game effect occurred. Verify important state changes with the relevant inspection tools.
-- `list_groups` reports each waypoint's index, type, position, and completion radius. Inspect existing waypoints before replacing or extending a group's route so stale waypoints do not redirect it.
+- `list_groups` reports each waypoint's zero-based index, type, position, and completion radius. `current_waypoint` is one-based; subtract one to match it to a waypoint-detail index. Inspect existing waypoints before replacing or extending a group's route so stale waypoints do not redirect it.
 - `create_marker` takes `direction` as a heading in degrees. Use `list_markers` to confirm the stored `dir` for directional markers; the marker text does not set its orientation.
 - For helicopter insertion, pair a transport group's `TR UNLOAD` waypoint with a passenger group's `UNLOAD` waypoint at the same landing zone, synchronize the waypoints, and place the passenger group's post-unload route after `UNLOAD`. Confirm passengers have actually left the aircraft and reached the intended landing area before reporting the insertion complete.
 

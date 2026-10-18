@@ -340,8 +340,8 @@ createHashMapFromArray [
 async def list_groups(side: str | None = None, limit: int = 100) -> dict:
     """List groups with unit counts, behaviour, combat mode, position, and waypoint details.
 
-    Each waypoint includes its index, type, position, and completion radius. Indices can be used
-    with currentWaypoint when inspecting or changing a group's active route.
+    Waypoint-detail indices are zero-based. current_waypoint is the active waypoint's one-based
+    index, so subtract one to match it to a waypoint-detail index.
     """
     return await _run(
         """
@@ -929,9 +929,9 @@ private _routes = if (_showWaypoints) then {
         private _group = _x;
         private _points = [getPosATL (leader _group)];
         private _types = [];
-        private _currentWaypoint = currentWaypoint _group;
+        private _firstRemainingWaypoint = ((currentWaypoint _group) - 1) max 0;
         {
-            if ((_x select 1) >= _currentWaypoint) then {
+            if ((_x select 1) >= _firstRemainingWaypoint) then {
                 private _waypoint = _x select 0;
                 _points pushBack (waypointPosition [_group, _waypoint]);
                 _types pushBack (waypointType [_group, _waypoint]);
