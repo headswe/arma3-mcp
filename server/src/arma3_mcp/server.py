@@ -932,9 +932,8 @@ private _routes = if (_showWaypoints) then {
         private _firstRemainingWaypoint = ((currentWaypoint _group) - 1) max 0;
         {
             if ((_x select 1) >= _firstRemainingWaypoint) then {
-                private _waypoint = _x select 0;
-                _points pushBack (waypointPosition [_group, _waypoint]);
-                _types pushBack (waypointType [_group, _waypoint]);
+                _points pushBack (waypointPosition _x);
+                _types pushBack (waypointType _x);
             };
         } forEach (waypoints _group);
         createHashMapFromArray [
