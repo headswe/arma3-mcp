@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
+import math
 import os
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
+
+import resvg_py
 
 try:  # mcp 2.x
     from mcp.server.mcpserver import MCPServer as _Server
@@ -19,8 +24,11 @@ except ImportError:  # mcp 1.x
 
     _MCP2 = False
 
+from mcp.types import ImageContent, TextContent
+
 from . import __version__
 from .bridge import Bridge, BridgeError
+from .map_tile import crop_svg, find_world_svg, svg_extent
 from .rpt import RptReader
 from .sqf import RESOLVE, side_name, strip_comments
 
@@ -40,12 +48,14 @@ Controls a running Arma 3 game through the arma3_mcp extension.
   server anyway), a client owner id, or a player name/UID runs code on that machine instead.
 - Script errors are reported in the RPT log: execute_sqf adds new error lines as rpt_errors when the
   log is on this machine, and read_rpt reads it.
+- map_tile clips a diag_exportTerrainSvg map to world bounds and overlays live tactical objects.
 - Check game_status first if requests time out.
 """
 
 bridge = Bridge()
 rpt = RptReader()
 mcp = _Server("arma3", instructions=INSTRUCTIONS)
+map_svg_dir = Path(__file__).resolve().parents[3] / "svg" / "tile-svg"
 
 
 def _target(target: str | int | None) -> str | int:
@@ -56,11 +66,20 @@ def _target(target: str | int | None) -> str | int:
     return int(target) if target.strip().isdigit() else target.strip()
 
 
-async def _run(code: str, args: Any = None, *, target: str | int = "local", timeout: float = 15.0) -> Any:
+async def _run(
+    code: str,
+    args: Any = None,
+    *,
+    target: str | int = "local",
+    timeout: float = 15.0,
+    scheduled: bool = False,
+) -> Any:
     """Runs a tool's SQF with the RESOLVE helpers in scope; returns the result or raises ToolError."""
     mark = rpt.mark()
     try:
-        res = await bridge.execute(strip_comments(RESOLVE + code), args, target=_target(target), timeout=timeout)
+        res = await bridge.execute(
+            strip_comments(RESOLVE + code), args, scheduled=scheduled, target=_target(target), timeout=timeout
+        )
     except BridgeError as exc:
         raise ToolError(str(exc)) from None
     if not res.get("ok"):
@@ -790,6 +809,144 @@ createHashMapFromArray [
 
 
 @mcp.tool()
+async def map_tile(
+    top_left: list[float],
+    bottom_right: list[float],
+    max_size: int = 1024,
+    include_dead: bool = False,
+    labels: bool = False,
+) -> list[TextContent | ImageContent]:
+    """Return a cropped terrain image with live units, vehicles and map markers.
+
+    Coordinates use Arma world metres: top_left is [min_x, max_y] and bottom_right is
+    [max_x, min_y]. The matching diag_exportTerrainSvg file must be in the configured SVG folder.
+    """
+    if not isinstance(top_left, (list, tuple)) or not isinstance(bottom_right, (list, tuple)):
+        raise ToolError("top_left and bottom_right must each be [x, y]")
+    if len(top_left) != 2 or len(bottom_right) != 2:
+        raise ToolError("top_left and bottom_right must each be [x, y]")
+    if any(isinstance(value, bool) for value in (*top_left, *bottom_right)):
+        raise ToolError("map bounds must contain finite numbers")
+    try:
+        left, top = (float(value) for value in top_left)
+        right, bottom = (float(value) for value in bottom_right)
+    except (TypeError, ValueError):
+        raise ToolError("map bounds must contain finite numbers") from None
+    if not all(math.isfinite(value) for value in (left, top, right, bottom)):
+        raise ToolError("map bounds must contain finite numbers")
+    if left >= right or bottom >= top:
+        raise ToolError("top_left must be northwest of bottom_right: x must increase and y must decrease")
+    if isinstance(max_size, bool) or not isinstance(max_size, int) or not 128 <= max_size <= 2048:
+        raise ToolError("max_size must be an integer from 128 to 2048 pixels")
+
+    snapshot = await _run(
+        """
+params ["_left", "_bottom", "_right", "_top", "_includeDead"];
+private _inside = {
+    params ["_pos"];
+    count _pos >= 2 && {(_pos select 0) >= _left} && {(_pos select 0) <= _right}
+        && {(_pos select 1) >= _bottom} && {(_pos select 1) <= _top}
+};
+private _units = (allUnits + (allDeadMen - allUnits)) select {
+    private _pos = getPosATL _x;
+    ([_pos] call _inside) && {isNull objectParent _x} && {_includeDead || {alive _x}}
+};
+private _vehicles = vehicles select { _x isKindOf "AllVehicles" && {[getPosATL _x] call _inside} };
+private _markers = allMapMarkers select {
+    private _pos = markerPos _x;
+    private _size = markerSize _x;
+    private _extent = sqrt ((abs (_size select 0)) ^ 2 + (abs (_size select 1)) ^ 2);
+    markerAlpha _x > 0
+        && {(_pos select 0) + _extent >= _left}
+        && {(_pos select 0) - _extent <= _right}
+        && {(_pos select 1) + _extent >= _bottom}
+        && {(_pos select 1) - _extent <= _top}
+};
+[
+    worldName,
+    worldSize,
+    _units apply {
+        createHashMapFromArray [
+            ["kind", "unit"], ["name", name _x], ["side", (side group _x) call _sideName],
+            ["type", typeOf _x], ["pos", getPosATL _x], ["alive", alive _x]
+        ]
+    },
+    _vehicles apply {
+        createHashMapFromArray [
+            ["kind", "vehicle"], ["name", getText (configOf _x >> "displayName")],
+            ["side", (side _x) call _sideName], ["type", typeOf _x], ["pos", getPosATL _x]
+        ]
+    },
+    _markers apply {
+        createHashMapFromArray [
+            ["kind", "marker"], ["name", _x], ["text", markerText _x],
+            ["color", markerColor _x], ["shape", markerShape _x], ["pos", markerPos _x],
+            ["size", markerSize _x], ["dir", markerDir _x]
+        ]
+    }
+]
+""",
+        [left, bottom, right, top, include_dead],
+        scheduled=True,
+        timeout=45.0,
+    )
+    world, world_size, units, vehicles, markers = snapshot
+    try:
+        svg_path = find_world_svg(map_svg_dir, str(world))
+    except FileNotFoundError as exc:
+        raise ToolError(
+            f"{exc}. Set ARMA3_MAP_SVG_DIR or use --map-svg-dir to select the exported terrain folder."
+        ) from None
+    try:
+        source = svg_path.read_text(encoding="utf-8")
+        svg_root = ET.fromstring(source)
+        svg_width, svg_height = svg_extent(svg_root)
+    except (OSError, ET.ParseError, ValueError) as exc:
+        raise ToolError(f"could not read terrain SVG {svg_path}: {exc}") from None
+    if left < 0 or bottom < 0 or right > svg_width or top > svg_height:
+        raise ToolError(f"map bounds must fit inside the {svg_width:g} x {svg_height:g} metre terrain SVG")
+    if (
+        not math.isclose(float(world_size), svg_width, rel_tol=0.01, abs_tol=1)
+        or not math.isclose(float(world_size), svg_height, rel_tol=0.01, abs_tol=1)
+    ):
+        raise ToolError(
+            f"terrain SVG {svg_path.name} is {svg_width:g} x {svg_height:g} m but "
+            f"the active world reports {world_size:g} m"
+        )
+
+    crop_width, crop_height = right - left, top - bottom
+    image_width = max(1, round(max_size * crop_width / max(crop_width, crop_height)))
+    image_height = max(1, round(max_size * crop_height / max(crop_width, crop_height)))
+    try:
+        image = crop_svg(
+            source,
+            view_box=(left, svg_height - top, right, svg_height - bottom),
+            output_size=(image_width, image_height),
+            overlays=[*units, *vehicles, *markers],
+            world_height=svg_height,
+            show_labels=labels,
+        )
+    except (ET.ParseError, ValueError) as exc:
+        raise ToolError(f"could not crop terrain SVG {svg_path}: {exc}") from None
+    png = resvg_py.svg_to_bytes(svg_string=image, width=image_width, height=image_height)
+
+    summary = (
+        f"{world} map tile, world bounds [{left:g}, {bottom:g}] to [{right:g}, {top:g}] m; "
+        f"{len(units)} units, {len(vehicles)} vehicles and {len(markers)} markers. "
+        "Map features include roads, terrain, water and contours. Overlay legend: blue=WEST, red=EAST, "
+        "green=GUER, purple=CIV, gray=dead; units are circles, vehicles diamonds, markers use their configured color."
+    )
+    return [
+        TextContent(type="text", text=summary),
+        ImageContent(
+            type="image",
+            data=base64.b64encode(png).decode("ascii"),
+            mimeType="image/png",
+        ),
+    ]
+
+
+@mcp.tool()
 async def create_marker(
     position: list[float] | None = None,
     near: str = "",
@@ -916,12 +1073,18 @@ def list_rpt_files() -> list:
 
 
 def main(argv: list[str] | None = None) -> None:
+    global map_svg_dir
     env = os.environ.get
     parser = argparse.ArgumentParser(prog="arma3-mcp", description=__doc__)
     parser.add_argument("--host", default=env("ARMA3_MCP_HOST", "127.0.0.1"), help="extension address (ARMA3_MCP_HOST)")
     parser.add_argument("--port", type=int, default=int(env("ARMA3_MCP_PORT", "9120")), help="extension port (ARMA3_MCP_PORT)")
     parser.add_argument("--token", default=env("ARMA3_MCP_TOKEN", ""), help="extension token (ARMA3_MCP_TOKEN)")
     parser.add_argument("--rpt-dir", action="append", help="folder with .rpt logs (ARMA3_RPT_DIR); repeatable")
+    parser.add_argument(
+        "--map-svg-dir",
+        default=env("ARMA3_MAP_SVG_DIR", str(map_svg_dir)),
+        help="folder with diag_exportTerrainSvg exports (ARMA3_MAP_SVG_DIR)",
+    )
     parser.add_argument("--transport", choices=["stdio", "streamable-http", "sse"], default="stdio")
     parser.add_argument("--http-host", default="127.0.0.1", help="address for the HTTP transports")
     parser.add_argument("--http-port", type=int, default=8765, help="port for the HTTP transports")
@@ -931,6 +1094,7 @@ def main(argv: list[str] | None = None) -> None:
     bridge.host, bridge.port, bridge.token = args.host, args.port, args.token
     if args.rpt_dir:
         rpt.dirs = [Path(d) for d in args.rpt_dir]
+    map_svg_dir = Path(args.map_svg_dir)
 
     if args.transport == "stdio":
         mcp.run()

@@ -9,7 +9,7 @@ description = "MCP server that runs SQF in a live Arma 3 game and returns the re
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "headswe" }]
-dependencies = ["mcp>=1.10"]
+dependencies = ["mcp>=1.10", "resvg-py>=0.5"]
 
 [project.scripts]
 arma3-mcp = "arma3_mcp.server:main"

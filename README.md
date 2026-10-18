@@ -1,6 +1,6 @@
 # Arma 3 MCP
 
-Lets an AI assistant (Claude Desktop, Claude Code or any other [MCP](https://modelcontextprotocol.io) client) work with a running Arma 3 game: run SQF and get the result back as JSON, look at units, vehicles, groups, markers and config, spawn and move things, change time and weather, and read the RPT log.
+Lets an AI assistant (Claude Desktop, Claude Code or any other [MCP](https://modelcontextprotocol.io) client) work with a running Arma 3 game: run SQF and get the result back as JSON, inspect units, vehicles, groups, markers and config, request cropped map images, spawn and move things, change time and weather, and read the RPT log.
 
 ```
 MCP client ──stdio──> arma3-mcp (Python) ──TCP 127.0.0.1:9120──> arma3_mcp_x64.dll ──callExtension──> @arma3_mcp addon (SQF)
@@ -65,6 +65,7 @@ Options (each also has an environment variable):
 | `--port` | `ARMA3_MCP_PORT` | `9120` | |
 | `--token` | `ARMA3_MCP_TOKEN` | | must match the extension's token, if it has one |
 | `--rpt-dir` | `ARMA3_RPT_DIR` | `%LOCALAPPDATA%\Arma 3` | where `.rpt` logs are; for a server, its `-profiles` folder |
+| `--map-svg-dir` | `ARMA3_MAP_SVG_DIR` | `svg/tile-svg` | folder containing `diag_exportTerrainSvg` exports for `map_tile` |
 | `--transport` | | `stdio` | or `streamable-http` / `sse` (with `--http-host`, `--http-port`) |
 
 ## Settings in the game
@@ -93,6 +94,7 @@ Options (each also has an environment variable):
 | `list_vehicles` | Vehicles with crew, fuel and damage; same filters. |
 | `list_groups` | Callsign, side, leader, unit counts, behaviour, combat mode, waypoints. |
 | `get_object` | Everything about one object: class, parents, position, grid, crew, animation, loadout, variables. |
+| `map_tile` | A cropped terrain image with current units, vehicles and markers, clipped to world-coordinate bounds. |
 | `get_variable` / `set_variable` / `list_variables` | Variables in mission/ui/profile/parsing namespaces or on an object. |
 | `get_config` | A config class (properties, including inherited ones, parents, subclasses) or a single property; `missionConfigFile` too. |
 | `search_classes` | Find classes in CfgVehicles, CfgWeapons, ... by class or display name. |
@@ -107,6 +109,16 @@ Options (each also has an environment variable):
 | `read_rpt` / `list_rpt_files` | The end of the RPT log, filtered by regex or to script errors only. |
 
 Objects are referred to by netId (`"2:345"`, as the list tools return them), a global variable name, or `"player"`.
+
+### `map_tile`
+
+`map_tile` returns a PNG image block for a bounded area of the current world. Coordinates are world metres: `top_left` is `[min_x, max_y]`, and `bottom_right` is `[max_x, min_y]`. For example:
+
+```json
+{"top_left": [3000, 6000], "bottom_right": [5000, 4000], "max_size": 1024}
+```
+
+The tool clips the world's `diag_exportTerrainSvg` export to those bounds, then overlays side-colored units, vehicles and map markers from the running mission. Terrain roads, vegetation, water and contour lines come from the SVG. `max_size` sets the longest image edge (128-2048 px); `labels=true` adds names, and `include_dead=true` includes dead infantry. By default it searches `svg/tile-svg/<worldName>.svg` relative to the checkout; set `ARMA3_MAP_SVG_DIR` or `--map-svg-dir` to use another folder. The SVG filenames should match the Arma world name (case-insensitive). Export files are not bundled with the package: provide them from `diag_exportTerrainSvg`. No PAA extraction or network map service is needed for the terrain background.
 
 ### `execute_sqf`
 
