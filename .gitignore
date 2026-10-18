@@ -1,0 +1,11 @@
+build/
+out/
+.vs/
+*.user
+.hemttout/
+.hemttprivatekey
+.biprivatekey
+__pycache__/
+*.egg-info/
+.venv/
+dist/
