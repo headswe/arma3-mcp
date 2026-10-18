@@ -28,7 +28,7 @@ from mcp.types import ImageContent, TextContent
 
 from . import __version__
 from .bridge import Bridge, BridgeError
-from .map_tile import crop_svg, find_world_svg, svg_extent
+from .map_tile import crop_svg, find_icon_png, find_world_svg, svg_extent
 from .rpt import RptReader
 from .sqf import RESOLVE, side_name, strip_comments
 
@@ -56,6 +56,7 @@ bridge = Bridge()
 rpt = RptReader()
 mcp = _Server("arma3", instructions=INSTRUCTIONS)
 map_svg_dir = Path(__file__).resolve().parents[3] / "svg" / "tile-svg"
+map_icon_dir = Path(__file__).resolve().parents[3] / "svg" / "icons"
 
 
 def _target(target: str | int | None) -> str | int:
@@ -868,19 +869,23 @@ private _markers = allMapMarkers select {
     _units apply {
         createHashMapFromArray [
             ["kind", "unit"], ["name", name _x], ["side", (side group _x) call _sideName],
-            ["type", typeOf _x], ["pos", getPosATL _x], ["alive", alive _x]
+            ["type", typeOf _x], ["icon", getText (configOf _x >> "icon")],
+            ["pos", getPosATL _x], ["alive", alive _x]
         ]
     },
     _vehicles apply {
         createHashMapFromArray [
             ["kind", "vehicle"], ["name", getText (configOf _x >> "displayName")],
-            ["side", (side _x) call _sideName], ["type", typeOf _x], ["pos", getPosATL _x]
+            ["side", (side _x) call _sideName], ["type", typeOf _x],
+            ["icon", getText (configOf _x >> "icon")], ["pos", getPosATL _x]
         ]
     },
     _markers apply {
         createHashMapFromArray [
             ["kind", "marker"], ["name", _x], ["text", markerText _x],
-            ["color", markerColor _x], ["shape", markerShape _x], ["pos", markerPos _x],
+            ["color", markerColor _x], ["shape", markerShape _x],
+            ["icon", getText (configFile >> "CfgMarkers" >> markerType _x >> "icon")],
+            ["pos", markerPos _x],
             ["size", markerSize _x], ["dir", markerDir _x]
         ]
     }
@@ -917,12 +922,32 @@ private _markers = allMapMarkers select {
     crop_width, crop_height = right - left, top - bottom
     image_width = max(1, round(max_size * crop_width / max(crop_width, crop_height)))
     image_height = max(1, round(max_size * crop_height / max(crop_width, crop_height)))
+    overlays = [*units, *vehicles, *markers]
+    icon_cache: dict[str, str | None] = {}
+    for item in overlays:
+        icon = str(item.get("icon", ""))
+        if icon not in icon_cache:
+            try:
+                icon_path = find_icon_png(map_icon_dir, icon)
+            except OSError as exc:
+                raise ToolError(f"could not search for map icon {icon!r} in {map_icon_dir}: {exc}") from None
+            if icon_path is None:
+                icon_cache[icon] = None
+            else:
+                try:
+                    icon_cache[icon] = "data:image/png;base64," + base64.b64encode(icon_path.read_bytes()).decode("ascii")
+                except OSError as exc:
+                    raise ToolError(f"could not read map icon {icon_path}: {exc}") from None
+        icon_data = icon_cache[icon]
+        if icon_data is None:
+            continue
+        item["icon_data"] = icon_data
     try:
         image = crop_svg(
             source,
             view_box=(left, svg_height - top, right, svg_height - bottom),
             output_size=(image_width, image_height),
-            overlays=[*units, *vehicles, *markers],
+            overlays=overlays,
             world_height=svg_height,
             show_labels=labels,
         )
@@ -1073,7 +1098,7 @@ def list_rpt_files() -> list:
 
 
 def main(argv: list[str] | None = None) -> None:
-    global map_svg_dir
+    global map_svg_dir, map_icon_dir
     env = os.environ.get
     parser = argparse.ArgumentParser(prog="arma3-mcp", description=__doc__)
     parser.add_argument("--host", default=env("ARMA3_MCP_HOST", "127.0.0.1"), help="extension address (ARMA3_MCP_HOST)")
@@ -1085,6 +1110,11 @@ def main(argv: list[str] | None = None) -> None:
         default=env("ARMA3_MAP_SVG_DIR", str(map_svg_dir)),
         help="folder with diag_exportTerrainSvg exports (ARMA3_MAP_SVG_DIR)",
     )
+    parser.add_argument(
+        "--icon-dir",
+        default=env("ARMA3_ICON_DIR", str(map_icon_dir)),
+        help="folder with extracted Arma PNG icons (ARMA3_ICON_DIR)",
+    )
     parser.add_argument("--transport", choices=["stdio", "streamable-http", "sse"], default="stdio")
     parser.add_argument("--http-host", default="127.0.0.1", help="address for the HTTP transports")
     parser.add_argument("--http-port", type=int, default=8765, help="port for the HTTP transports")
@@ -1095,6 +1125,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.rpt_dir:
         rpt.dirs = [Path(d) for d in args.rpt_dir]
     map_svg_dir = Path(args.map_svg_dir)
+    map_icon_dir = Path(args.icon_dir)
 
     if args.transport == "stdio":
         mcp.run()

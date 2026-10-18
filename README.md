@@ -66,6 +66,7 @@ Options (each also has an environment variable):
 | `--token` | `ARMA3_MCP_TOKEN` | | must match the extension's token, if it has one |
 | `--rpt-dir` | `ARMA3_RPT_DIR` | `%LOCALAPPDATA%\Arma 3` | where `.rpt` logs are; for a server, its `-profiles` folder |
 | `--map-svg-dir` | `ARMA3_MAP_SVG_DIR` | `svg/tile-svg` | folder containing `diag_exportTerrainSvg` exports for `map_tile` |
+| `--icon-dir` | `ARMA3_ICON_DIR` | `svg/icons` | folder containing extracted Arma PNG icons for map overlays |
 | `--transport` | | `stdio` | or `streamable-http` / `sse` (with `--http-host`, `--http-port`) |
 
 ## Settings in the game
@@ -118,7 +119,7 @@ Objects are referred to by netId (`"2:345"`, as the list tools return them), a g
 {"top_left": [3000, 6000], "bottom_right": [5000, 4000], "max_size": 1024}
 ```
 
-The tool clips the world's `diag_exportTerrainSvg` export to those bounds, then overlays side-colored units, vehicles and map markers from the running mission. Terrain roads, vegetation, water and contour lines come from the SVG. `max_size` sets the longest image edge (128-2048 px); `labels=true` adds names, and `include_dead=true` includes dead infantry. By default it searches `svg/tile-svg/<worldName>.svg` relative to the checkout; set `ARMA3_MAP_SVG_DIR` or `--map-svg-dir` to use another folder. The SVG filenames should match the Arma world name (case-insensitive). Export files are not bundled with the package: provide them from `diag_exportTerrainSvg`. No PAA extraction or network map service is needed for the terrain background.
+The tool clips the world's `diag_exportTerrainSvg` export to those bounds, then overlays side-colored units, vehicles and map markers from the running mission. When an object's Arma config references a PAA icon, the server resolves that path to the matching PNG in the icon folder and embeds it in the map; overlays without a matching PNG keep their standard shape. Set `ARMA3_ICON_DIR` or `--icon-dir` to use a different extracted icon folder. Terrain roads, vegetation, water and contour lines come from the SVG. `max_size` sets the longest image edge (128-2048 px); `labels=true` adds bold, high-contrast names for live overlays, and `include_dead=true` includes dead infantry. By default it searches `svg/tile-svg/<worldName>.svg` relative to the checkout; set `ARMA3_MAP_SVG_DIR` or `--map-svg-dir` to use another folder. The SVG filenames should match the Arma world name (case-insensitive). Export files are not bundled with the package: provide them from `diag_exportTerrainSvg`. No PAA extraction or network map service is needed for the terrain background.
 
 ### `execute_sqf`
 

@@ -264,10 +264,22 @@ def crop_svg(
         if show_labels and label:
             text = ET.SubElement(group, f"{{{SVG_NS}}}text", {
                 "x": f"{radius * 1.5:.3f}", "y": f"{radius * 0.4:.3f}",
-                "fill": "#111111", "stroke": "#ffffff", "stroke-width": f"{meters_per_pixel * 2:.3f}",
-                "paint-order": "stroke", "font-size": f"{meters_per_pixel * 10:.3f}",
+                "fill": "#111111", "stroke": "#ffffff", "stroke-width": f"{meters_per_pixel * 3:.3f}",
+                "paint-order": "stroke", "font-size": f"{meters_per_pixel * 20:.3f}",
+                "font-weight": "bold",
             })
             text.text = label
+
+    def add_icon(group: ET.Element, item: Mapping[str, Any]) -> bool:
+        icon_data = item.get("icon_data")
+        if not isinstance(icon_data, str) or not icon_data.startswith("data:image/png;base64,"):
+            return False
+        ET.SubElement(group, f"{{{SVG_NS}}}image", {
+            "x": f"{-radius:g}", "y": f"{-radius:g}",
+            "width": f"{radius * 2:g}", "height": f"{radius * 2:g}",
+            "href": icon_data, "preserveAspectRatio": "xMidYMid meet",
+        })
+        return True
 
     for item in overlays:
         position = item.get("pos", [])
@@ -314,6 +326,9 @@ def crop_svg(
                 ET.SubElement(group, f"{{{SVG_NS}}}{tag}", shape_attrs)
                 add_label(group, label)
                 continue
+            if add_icon(group, item):
+                add_label(group, label)
+                continue
             ET.SubElement(group, f"{{{SVG_NS}}}path", {
                 "d": f"M 0 {-radius:g} L {radius:g} 0 L 0 {radius:g} L {-radius:g} 0 Z",
                 "fill": color, "stroke": "#ffffff", "stroke-width": f"{meters_per_pixel * 1.5:.3f}",
@@ -321,6 +336,9 @@ def crop_svg(
             add_label(group, label)
             continue
         title.text = f"{kind}: {label} ({side})" if label else f"{kind} ({side})"
+        if add_icon(group, item):
+            add_label(group, label)
+            continue
         shape = "rect" if kind == "vehicle" else "circle"
         if shape == "rect":
             ET.SubElement(group, f"{{{SVG_NS}}}rect", {
@@ -339,6 +357,30 @@ def crop_svg(
         add_label(group, label)
 
     return ET.tostring(result, encoding="unicode")
+
+
+def find_icon_png(directory: Path, icon: str) -> Path | None:
+    """Resolve an Arma config icon path (PAA) to its extracted PNG, case-insensitively."""
+    normalized = icon.replace("\\", "/").strip("/")
+    parts = normalized.split("/")
+    if not normalized or any(part in ("", ".", "..") for part in parts):
+        return None
+    parts[-1] = re.sub(r"\.paa$", ".png", parts[-1], flags=re.IGNORECASE)
+    if not parts[-1].casefold().endswith(".png"):
+        return None
+
+    path = directory.joinpath(*parts)
+    if path.is_file():
+        return path
+    current = directory
+    for part in parts:
+        if not current.is_dir():
+            return None
+        match = next((entry for entry in current.iterdir() if entry.name.casefold() == part.casefold()), None)
+        if match is None:
+            return None
+        current = match
+    return current if current.is_file() else None
 
 
 def find_world_svg(directory: Path, world: str) -> Path:
