@@ -60,6 +60,7 @@ class FakeGame:
         self._cb = CALLBACK(self._callback)
         self.lib.RVExtensionRegisterCallback(self._cb)
         self.chunks_read = 0
+        self.seen = []  # every request handed to the game
         threading.Thread(target=self._loop, daemon=True).start()
 
     def _callback(self, name, function, data):
@@ -96,6 +97,7 @@ class FakeGame:
             assert rc == 0, rc
             assert len(payload) == int(size)
             req = json.loads(payload)
+            self.seen.append(req)
             threading.Thread(target=self.handle, args=(rid, req), daemon=True).start()
 
     def handle(self, rid, req):
@@ -234,6 +236,32 @@ class BridgeTest(GameTestCase):
 
         with self.assertRaises(BridgeError):
             self.run_async(go())
+
+    def raw(self, data: bytes) -> bytes:
+        """Sends raw bytes and returns everything the extension answers until it closes."""
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as s:
+            s.sendall(data)
+            out = b""
+            while chunk := s.recv(65536):
+                out += chunk
+        return out
+
+    def test_unknown_command_closes_before_http_body(self):
+        before = len(self.game.seen)
+        body = b'EXEC 1 {"code":"from a web page"}\n'
+        http = (
+            b"AUTH secret\nPOST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain\r\n"
+            + b"Content-Length: %d\r\n\r\n" % len(body) + body
+        )
+        out = self.raw(http)
+        self.assertIn(b"ERR unknown command POST", out)
+        self.assertNotIn(b"RESULT", out)
+        time.sleep(0.7)  # past the fake game's half-second poll
+        self.assertEqual(len(self.game.seen), before, "the body's EXEC never reached the game")
+
+    def test_unauthenticated_input_is_capped(self):
+        out = self.raw(b"x" * 5000)
+        self.assertIn(b"ERR authentication required", out)
 
     def test_timeout_when_game_not_polling_then_cancelled(self):
         self.game.polling.clear()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 import json
 from typing import Any
@@ -50,10 +51,13 @@ class Bridge:
                 if line != "OK auth":
                     writer.close()
                     raise BridgeError(f"The extension refused the token: {line or 'connection closed'}")
-            self._reader, self._writer = reader, writer
-            self._read_task = asyncio.create_task(self._read_loop(reader))
+            # Each connection gets its own pending map, so a closing one only fails its own requests.
+            self._reader, self._writer, self._pending = reader, writer, {}
+            self._read_task = asyncio.create_task(self._read_loop(reader, writer, self._pending))
 
-    async def _read_loop(self, reader: asyncio.StreamReader) -> None:
+    async def _read_loop(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, pending: dict[str, asyncio.Future]
+    ) -> None:
         try:
             while True:
                 raw = await reader.readline()
@@ -61,7 +65,7 @@ class Bridge:
                     break
                 kind, _, rest = raw.decode("utf-8", errors="replace").rstrip("\r\n").partition(" ")
                 rid, _, body = rest.partition(" ")
-                fut = self._pending.pop(rid, None)
+                fut = pending.pop(rid, None)
                 if fut is None or fut.done():
                     continue
                 if kind == "ERROR":
@@ -76,31 +80,39 @@ class Bridge:
         except (OSError, asyncio.IncompleteReadError, ValueError):
             pass
         finally:
-            if self._writer is not None:
-                self._writer.close()
-            self._writer = None
-            for fut in self._pending.values():
+            writer.close()
+            # A new connection may already have replaced this one; leave its writer alone.
+            if self._writer is writer:
+                self._writer = None
+            for fut in pending.values():
                 if not fut.done():
                     fut.set_exception(BridgeError("lost the connection to the game"))
-            self._pending.clear()
+            pending.clear()
 
     async def _request(self, command: str, body: str | None, timeout: float) -> Any:
         await self._connect()
+        writer, pending = self._writer, self._pending
         rid = str(next(self._ids))
         fut = asyncio.get_running_loop().create_future()
-        self._pending[rid] = fut
+        pending[rid] = fut
         line = f"{command} {rid}" + (f" {body}" if body is not None else "")
-        async with self._write_lock:
-            assert self._writer is not None
-            self._writer.write(line.encode() + b"\n")
-            await self._writer.drain()
+        try:
+            async with self._write_lock:
+                if writer is None or writer.is_closing():
+                    raise ConnectionResetError("connection closed")
+                writer.write(line.encode() + b"\n")
+                await writer.drain()
+        except OSError as exc:
+            pending.pop(rid, None)
+            raise BridgeError(f"lost the connection to the game ({exc})") from None
         try:
             return await asyncio.wait_for(fut, timeout)
         except asyncio.TimeoutError:
-            self._pending.pop(rid, None)
-            if command == "EXEC" and self._writer is not None:
-                async with self._write_lock:
-                    self._writer.write(f"CANCEL {rid}\n".encode())
+            pending.pop(rid, None)
+            if command == "EXEC" and not writer.is_closing():
+                with contextlib.suppress(OSError):
+                    async with self._write_lock:
+                        writer.write(f"CANCEL {rid}\n".encode())
             raise
 
     async def status(self, timeout: float = 5.0) -> dict:
@@ -126,7 +138,10 @@ class Bridge:
                 elif scheduled:
                     hint = " The game is polling, so the scheduled script is probably still running (or waiting)."
                 else:
-                    hint = " The game is polling, so the code may still be running on a remote machine."
+                    hint = (
+                        " The game is polling, so the code may still be running on a remote machine, or that"
+                        " machine refused it (a mission whose CfgRemoteExec does not allow call)."
+                    )
             except BridgeError:
                 pass
             raise BridgeError(f"No answer from the game within {timeout:g}s.{hint}") from None

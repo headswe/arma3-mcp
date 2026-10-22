@@ -8,7 +8,8 @@
  * their str form, non-finite numbers become strings, non-string hashmap keys are str'ed.
  *
  * Also sent to other machines as code (a3mcp_fnc_remoteRun), so it must not depend on other functions.
- * Locals carry an _a3mcp prefix so the code being run cannot clobber them by accident.
+ * The code starts with privateAll, so it cannot see or overwrite the locals of the functions that
+ * called it (fn_handle's _id, say); locals here also carry an _a3mcp prefix.
  */
 params ["_a3mcp_code", ["_a3mcp_args", []], ["_a3mcp_unscheduled", true]];
 
@@ -38,7 +39,8 @@ private _a3mcp_ok = true;
 private _a3mcp_error = "";
 private _a3mcp_result = nil;
 
-private _a3mcp_fn = compile _a3mcp_code;
+// Same line as the code, so line numbers in error messages still match.
+private _a3mcp_fn = compile ("privateAll; " + _a3mcp_code);
 if (_a3mcp_fn isEqualTo {} && {(_a3mcp_code splitString (" ;" + toString [9, 10, 13])) isNotEqualTo []}) then {
     _a3mcp_ok = false;
     _a3mcp_error = "the code did not compile (syntax error); the RPT log has the details";

@@ -3,7 +3,7 @@
  */
 params ["_id", "_json"];
 if (isNil "a3mcp_remote") exitWith {};
-private _owner = a3mcp_remote getOrDefault [_id, -100];
+private _owner = (a3mcp_remote getOrDefault [_id, [-100]]) select 0;
 if (_owner == -100) exitWith {};
 if (isRemoteExecuted && {remoteExecutedOwner != _owner}) exitWith {};
 a3mcp_remote deleteAt _id;

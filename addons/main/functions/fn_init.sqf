@@ -10,7 +10,7 @@ if (_error != 0) exitWith {
 diag_log format ["[arma3_mcp] %1", _text];
 if (_code != 0) exitWith {};
 
-a3mcp_remote = createHashMap;  // request id -> owner of the machine running it, for target = a client
+a3mcp_remote = createHashMap;  // request id -> [owner of the machine running it, diag_tickTime sent]
 
 // The extension fires this as soon as a request arrives.
 addMissionEventHandler ["ExtensionCallback", {
@@ -22,6 +22,6 @@ addMissionEventHandler ["ExtensionCallback", {
 [] spawn {
     while {true} do {
         uiSleep 0.5;
-        isNil { call a3mcp_fnc_drain };
+        isNil { call a3mcp_fnc_drain; call a3mcp_fnc_expireRemote };
     };
 };

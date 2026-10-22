@@ -23,6 +23,7 @@ class CfgFunctions {
             class reply {};
             class target {};
             class remoteResult {};
+            class expireRemote {};
             class execute { headerType = -1; };    // sent to other machines as code, so no function header
             class remoteRun { headerType = -1; };  // sent to other machines as code, so no function header
         };
