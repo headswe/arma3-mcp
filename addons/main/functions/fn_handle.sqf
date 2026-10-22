@@ -22,7 +22,7 @@ if (_owner isEqualType "") exitWith {
 };
 
 if (_owner >= 0) exitWith {
-    a3mcp_remote set [_id, _owner];
+    a3mcp_remote set [_id, [_owner, diag_tickTime]];
     [[_id, _code, _args, _scheduled, a3mcp_fnc_execute, clientOwner], a3mcp_fnc_remoteRun] remoteExecCall ["call", _owner];
 };
 

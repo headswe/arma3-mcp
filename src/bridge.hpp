@@ -10,9 +10,13 @@
 //   EXEC <id> <json request>                 RESULT <id> <json> | ERROR <id> <reason>
 //   CANCEL <id>                              (drops a request the game has not picked up yet)
 //
+// Any other line closes the connection, so a browser that POSTs to the port (its request line
+// comes first) cannot get an EXEC in through the body.
+//
 // <id> is chosen by the client and only has to be unique on its connection.
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -54,7 +58,7 @@ public:
 
     // Starts listening; idempotent. Returns a line for the RPT.
     bool start(const config& cfg, std::string& message);
-    bool listening() const { return listening_; }
+    bool listening() const { return listening_.load(); }
 
     // Called when a request is queued so the game drains the queue now instead of on its next poll.
     void set_wake(wake_fn fn);
@@ -86,7 +90,8 @@ private:
 
     void accept_loop();
     void serve(std::shared_ptr<connection> conn);
-    void handle_line(const std::shared_ptr<connection>& conn, std::string_view line);
+    // Returns false when the connection should be closed.
+    bool handle_line(const std::shared_ptr<connection>& conn, std::string_view line);
     void wake();
 
     std::mutex mutex_;
@@ -103,7 +108,7 @@ private:
     bool signaled_ = false;  // a wake-up is outstanding; cleared when the game finds the queue empty
 
     config cfg_;
-    bool listening_ = false;
+    std::atomic<bool> listening_{false};
     std::intptr_t listen_socket_ = -1;
 };
 

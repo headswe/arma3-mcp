@@ -40,6 +40,9 @@ namespace a3mcp {
 namespace {
 
 constexpr size_t max_line = 64 * 1024 * 1024;
+// Until a connection has sent AUTH, it gets no more than this, so it cannot make the game buffer much.
+constexpr size_t max_unauthed_line = 4 * 1024;
+constexpr int max_connections = 16;
 
 std::string trim(std::string_view s) {
     size_t b = 0, e = s.size();
@@ -89,6 +92,14 @@ std::string json_escape(std::string_view s) {
         }
     }
     return out + "\"";
+}
+
+// Compares without stopping at the first difference, so timing does not reveal the token.
+bool equal_secret(std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) return false;
+    unsigned char diff = 0;
+    for (size_t i = 0; i < a.size(); ++i) diff |= static_cast<unsigned char>(a[i] ^ b[i]);
+    return diff == 0;
 }
 
 // Splits "WORD rest" into WORD and rest.
@@ -167,6 +178,7 @@ public:
         cv_.notify_one();
     }
 
+    // Stops sending and reading at once (the writer failed, or the connection is torn down).
     void close() {
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -181,6 +193,18 @@ public:
 #endif
     }
 
+    // Sends what is queued (a last ERR line, say), then closes. Blocks until the writer is done,
+    // so call it from the connection's own thread, never the game's.
+    void finish() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            finishing_ = true;
+            cv_.notify_one();
+        }
+        if (writer_.joinable()) writer_.join();
+        close();
+    }
+
 private:
     // Sends queued lines on its own thread, so the game thread never blocks on a slow client.
     void write_loop() {
@@ -188,8 +212,14 @@ private:
             std::string line;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
-                cv_.wait(lock, [this] { return closed_ || !out_.empty(); });
-                if (out_.empty()) return;
+                cv_.wait(lock, [this] { return closed_ || finishing_ || !out_.empty(); });
+                if (out_.empty()) {
+                    if (finishing_ && !closed_) {
+                        lock.unlock();
+                        close();
+                    }
+                    return;
+                }
                 line = std::move(out_.front());
                 out_.pop_front();
             }
@@ -211,6 +241,7 @@ private:
     std::condition_variable cv_;
     std::deque<std::string> out_;
     bool closed_ = false;
+    bool finishing_ = false;
     std::thread writer_;
 };
 
@@ -277,6 +308,21 @@ void bridge::accept_loop() {
         }
         int yes = 1;
         setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&yes), sizeof(yes));
+        // A client that stops reading cannot hold a writer thread forever.
+#ifdef _WIN32
+        DWORD send_timeout = 10000;
+#else
+        timeval send_timeout{10, 0};
+#endif
+        setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&send_timeout), sizeof(send_timeout));
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (connections_ >= max_connections) {
+                close_socket(s);
+                continue;
+            }
+            ++connections_;
+        }
         auto conn = std::make_shared<connection>(s);
         std::thread([this, conn] { serve(conn); }).detach();
     }
@@ -285,7 +331,6 @@ void bridge::accept_loop() {
 void bridge::serve(std::shared_ptr<connection> conn) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        ++connections_;
         conn->authed = cfg_.token.empty();
     }
     std::string buffer;
@@ -303,7 +348,7 @@ void bridge::serve(std::shared_ptr<connection> conn) {
             if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
             if (!conn->authed) {
                 auto [word, rest] = split_word(line);
-                if (word == "AUTH" && rest == cfg_.token) {
+                if (word == "AUTH" && equal_secret(rest, cfg_.token)) {
                     conn->authed = true;
                     conn->send("OK auth");
                 } else {
@@ -311,24 +356,29 @@ void bridge::serve(std::shared_ptr<connection> conn) {
                     open = false;
                     break;
                 }
-            } else if (!line.empty()) {
-                handle_line(conn, line);
+            } else if (!line.empty() && !handle_line(conn, line)) {
+                open = false;
+                break;
             }
             start = nl + 1;
         }
         buffer.erase(0, start);
+        if (open && !conn->authed && buffer.size() > max_unauthed_line) {
+            conn->send("ERR authentication required: send AUTH <token> first");
+            break;
+        }
         if (buffer.size() > max_line) {
             conn->send("ERR line too long");
             break;
         }
     }
-    conn->close();
+    conn->finish();
     std::lock_guard<std::mutex> lock(mutex_);
     --connections_;
     // Requests still queued for this connection are dropped by poll() once the connection is gone.
 }
 
-void bridge::handle_line(const std::shared_ptr<connection>& conn, std::string_view line) {
+bool bridge::handle_line(const std::shared_ptr<connection>& conn, std::string_view line) {
     auto [cmd, rest] = split_word(line);
     if (cmd == "PING") {
         conn->send("PONG " + std::string(rest));
@@ -338,7 +388,7 @@ void bridge::handle_line(const std::shared_ptr<connection>& conn, std::string_vi
         auto [client_id, payload] = split_word(rest);
         if (client_id.empty() || payload.empty()) {
             conn->send("ERROR " + std::string(client_id) + " malformed EXEC");
-            return;
+            return true;
         }
         auto req = std::make_shared<request>();
         req->client_id = std::string(client_id);
@@ -358,8 +408,11 @@ void bridge::handle_line(const std::shared_ptr<connection>& conn, std::string_vi
                                     }),
                      queue_.end());
     } else {
-        conn->send("ERR unknown command " + std::string(cmd));
+        // Not our protocol (an HTTP request from a web page, say): stop reading before its body.
+        conn->send("ERR unknown command " + std::string(cmd.substr(0, 32)));
+        return false;
     }
+    return true;
 }
 
 void bridge::set_wake(wake_fn fn) {

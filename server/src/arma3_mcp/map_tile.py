@@ -226,7 +226,7 @@ def _clone_clipped(
 
 
 def crop_svg(
-    source: str,
+    source: str | ET.Element,
     *,
     view_box: tuple[float, float, float, float],
     output_size: tuple[int, int],
@@ -234,8 +234,9 @@ def crop_svg(
     world_height: float,
     show_labels: bool = False,
 ) -> str:
-    """Clip an exported full-world SVG and add point overlays in Arma world coordinates."""
-    root = ET.fromstring(source)
+    """Clip an exported full-world SVG (text, or its parsed root, which is left unchanged) and add
+    point overlays in Arma world coordinates."""
+    root = ET.fromstring(source) if isinstance(source, str) else source
     width, height = svg_extent(root)
     left, top, right, bottom = view_box
     if not (0 <= left < right <= width and 0 <= top < bottom <= height):
@@ -377,7 +378,8 @@ def crop_svg(
                 shape_attrs.update({
                     "fill": color, "fill-opacity": "0.18", "stroke": color,
                     "stroke-width": f"{meters_per_pixel * 1.5:.3f}",
-                    "transform": f"rotate({-_number(str(item.get('dir', 0))):g})",
+                    # markerDir turns clockwise, as positive SVG rotation does once y points down.
+                    "transform": f"rotate({_number(str(item.get('dir', 0))):g})",
                 })
                 ET.SubElement(group, f"{{{SVG_NS}}}{tag}", shape_attrs)
                 add_label(group, label)

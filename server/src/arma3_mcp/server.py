@@ -7,11 +7,10 @@ import base64
 import datetime as dt
 import math
 import os
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
-
-import resvg_py
 
 try:  # mcp 2.x
     from mcp.server.mcpserver import MCPServer as _Server
@@ -68,8 +67,16 @@ Controls a running Arma 3 game through the arma3_mcp extension.
 bridge = Bridge()
 rpt = RptReader()
 mcp = _Server("arma3", instructions=INSTRUCTIONS)
-map_svg_dir = Path(__file__).resolve().parents[3] / "svg" / "tile-svg"
-map_icon_dir = Path(__file__).resolve().parents[3] / "svg" / "icons"
+
+
+def _default_dir(name: str) -> Path:
+    # svg/<name> in the checkout when run from one; otherwise in the current folder.
+    checkout = Path(__file__).resolve().parents[3] / "svg" / name
+    return checkout if checkout.is_dir() else Path("svg") / name
+
+
+map_svg_dir = _default_dir("tile-svg")
+map_icon_dir = _default_dir("icons")
 
 
 def _target(target: str | int | None) -> str | int:
@@ -340,8 +347,9 @@ createHashMapFromArray [
 async def list_groups(side: str | None = None, limit: int = 100) -> dict:
     """List groups with unit counts, behaviour, combat mode, position, and waypoint details.
 
-    Waypoint-detail indices are zero-based. current_waypoint is the active waypoint's one-based
-    index, so subtract one to match it to a waypoint-detail index.
+    Waypoint indices are zero-based; index 0 is the group's starting position. current_waypoint
+    is the index of the active waypoint in waypoint_details (equal to the waypoint count once all
+    are completed).
     """
     return await _run(
         """
@@ -713,7 +721,9 @@ async def teleport(
     ref: str, position: list[float] | None = None, near: str = "", distance: float = 3, direction: float | None = None
 ) -> dict:
     """Move an object or unit to a position [x, y(, z above terrain)] or next to another object
-    (`near`: netId, variable name or "player"). Units in a vehicle are moved out first."""
+    (`near`: netId, variable name or "player"). Units in a vehicle are moved out first. An object
+    local to another machine (a player, say) is moved there, so the returned position can still be
+    the old one; check with get_object."""
     if position is None and not near:
         raise ToolError("give a position or near")
     return await _run(
@@ -726,10 +736,19 @@ if (_near != "") then {
 };
 _pos = +_pos;
 if (count _pos == 2) then { _pos pushBack 0 };
-if (!isNull objectParent _o) then { moveOut _o };
-_o setPosATL _pos;
-if (_dir >= 0) then { _o setDir _dir };
-_o call _brief
+// moveOut and setDir only work where the object is local (a player's own machine, say), so the
+// move runs there; for a remote object it lands a moment after this returns.
+private _move = {
+    params ["_o", "_pos", "_dir"];
+    if (!isNull objectParent _o) then { moveOut _o };
+    _o setPosATL _pos;
+    if (_dir >= 0) then { _o setDir _dir };
+};
+private _local = local _o;
+if (_local) then { [_o, _pos, _dir] call _move } else { [[_o, _pos, _dir], _move] remoteExecCall ["call", _o] };
+private _i = _o call _brief;
+_i set ["moved_on", ["owner machine", "here"] select _local];
+_i
 """,
         [ref, position or [], near, distance, -1 if direction is None else direction % 360],
     )
@@ -793,8 +812,9 @@ params ["_daytime", "_date", "_overcast", "_fog", "_rain", "_mult", "_t"];
 if (_date isNotEqualTo []) then { setDate _date };
 if (_daytime >= 0) then {
     private _d = date;
-    _d set [3, floor _daytime];
-    _d set [4, round ((_daytime % 1) * 60)];
+    private _minutes = round (_daytime * 60);  // 5.999 -> 06:00, not 05:60
+    _d set [3, floor (_minutes / 60) % 24];
+    _d set [4, _minutes % 60];
     setDate _d;
 };
 if (_overcast >= 0) then { _t setOvercast _overcast; if (_t == 0) then { forceWeatherChange } };
@@ -836,6 +856,19 @@ createHashMapFromArray [
 """,
         [contains, limit],
     )
+
+
+_svg_cache: dict[Path, tuple[float, ET.Element]] = {}
+
+
+def _load_svg(path: Path) -> ET.Element:
+    """Parses a terrain SVG once (they run to tens of MB) and again only when the file changes."""
+    mtime = path.stat().st_mtime
+    cached = _svg_cache.get(path)
+    if cached is None or cached[0] != mtime:
+        _svg_cache.clear()  # one world at a time
+        cached = _svg_cache[path] = (mtime, ET.fromstring(path.read_text(encoding="utf-8")))
+    return cached[1]
 
 
 @mcp.tool()
@@ -929,9 +962,9 @@ private _routes = if (_showWaypoints) then {
         private _group = _x;
         private _points = [getPosATL (leader _group)];
         private _types = [];
-        private _firstRemainingWaypoint = ((currentWaypoint _group) - 1) max 0;
+        private _currentWaypoint = currentWaypoint _group;
         {
-            if ((_x select 1) >= _firstRemainingWaypoint) then {
+            if ((_x select 1) >= _currentWaypoint) then {
                 _points pushBack (waypointPosition _x);
                 _types pushBack (waypointType _x);
             };
@@ -945,7 +978,6 @@ private _routes = if (_showWaypoints) then {
 ]
 """,
         [left, bottom, right, top, include_dead, show_waypoints],
-        scheduled=True,
         timeout=45.0,
     )
     world, world_size, units, vehicles, markers, routes = snapshot
@@ -956,8 +988,7 @@ private _routes = if (_showWaypoints) then {
             f"{exc}. Set ARMA3_MAP_SVG_DIR or use --map-svg-dir to select the exported terrain folder."
         ) from None
     try:
-        source = svg_path.read_text(encoding="utf-8")
-        svg_root = ET.fromstring(source)
+        svg_root = _load_svg(svg_path)
         svg_width, svg_height = svg_extent(svg_root)
     except (OSError, ET.ParseError, ValueError) as exc:
         raise ToolError(f"could not read terrain SVG {svg_path}: {exc}") from None
@@ -999,7 +1030,7 @@ private _routes = if (_showWaypoints) then {
         item["icon_data"] = icon_data
     try:
         image = crop_svg(
-            source,
+            svg_root,
             view_box=(left, svg_height - top, right, svg_height - bottom),
             output_size=(image_width, image_height),
             overlays=overlays,
@@ -1008,6 +1039,10 @@ private _routes = if (_showWaypoints) then {
         )
     except (ET.ParseError, ValueError) as exc:
         raise ToolError(f"could not crop terrain SVG {svg_path}: {exc}") from None
+    try:
+        import resvg_py
+    except ImportError:
+        raise ToolError("map_tile needs the resvg-py package (pip install resvg-py)") from None
     png = resvg_py.svg_to_bytes(svg_string=image, width=image_width, height=image_height)
 
     summary = (
@@ -1041,10 +1076,12 @@ async def create_marker(
     direction: float = 0,
 ) -> str:
     """Create a global map marker at a position [x, y] or on an object (`near`). shape is ICON,
-    RECTANGLE, ELLIPSE or POLYLINE; type is a CfgMarkers class (hd_dot, hd_objective, mil_dot, ...);
+    RECTANGLE or ELLIPSE; type is a CfgMarkers class (hd_dot, hd_objective, mil_dot, ...);
     color a CfgMarkerColors class (ColorRed, ColorBLUFOR, ...). Returns the marker name."""
     if position is None and not near:
         raise ToolError("give a position or near")
+    if shape.upper() not in ("ICON", "RECTANGLE", "ELLIPSE"):
+        raise ToolError("shape must be ICON, RECTANGLE or ELLIPSE")
     return await _run(
         """
 params ["_pos", "_near", "_text", "_name", "_type", "_color", "_shape", "_size", "_dir"];
@@ -1129,9 +1166,11 @@ def read_rpt(lines: int = 100, contains: str = "", errors_only: bool = False, fi
     """
     try:
         path = rpt.resolve(file or None)
+        return {"file": str(path), "lines": RptReader.tail(path, lines, contains or None, errors_only)}
     except FileNotFoundError as exc:
         raise ToolError(str(exc)) from None
-    return {"file": str(path), "lines": RptReader.tail(path, lines, contains or None, errors_only)}
+    except re.error as exc:
+        raise ToolError(f"contains is not a valid regular expression: {exc}") from None
 
 
 @mcp.tool()

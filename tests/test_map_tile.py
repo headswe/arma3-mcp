@@ -145,6 +145,23 @@ class MapTileTest(unittest.TestCase):
         png = resvg_py.svg_to_bytes(svg_string=image, width=100, height=100)
         self.assertEqual(png[:8], b"\x89PNG\r\n\x1a\n")
 
+    def test_area_markers_rotate_like_icon_markers(self):
+        root = ET.fromstring('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"/>')
+        image = crop_svg(
+            root,  # an already-parsed SVG works too, and is left unchanged
+            view_box=(0, 0, 100, 100),
+            output_size=(100, 100),
+            overlays=[
+                {"kind": "marker", "shape": "RECTANGLE", "pos": [50, 50], "size": [10, 5], "dir": 30},
+                {"kind": "marker", "shape": "ELLIPSE", "pos": [50, 50], "size": [10, 5], "dir": 30},
+            ],
+            world_height=100,
+        )
+        overlay = ET.fromstring(image).find(f"{SVG_NS}g[@id='a3mcp-overlay']")
+        self.assertEqual(overlay.find(f".//{SVG_NS}rect").get("transform"), "rotate(30)")
+        self.assertEqual(overlay.find(f".//{SVG_NS}ellipse").get("transform"), "rotate(30)")
+        self.assertEqual(len(root), 0)
+
     def test_cropped_svg_rasterizes_to_png(self):
         image = crop_svg(
             '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">'
