@@ -1,6 +1,6 @@
 # Arma 3 MCP
 
-Lets an AI assistant (Claude Desktop, Claude Code or any other [MCP](https://modelcontextprotocol.io) client) work with a running Arma 3 game: run SQF and get the result back as JSON, inspect units, vehicles, groups, markers and config, request cropped map images, spawn and move things, change time and weather, and read the RPT log.
+Lets an AI assistant (Claude Desktop, Claude Code or any other [MCP](https://modelcontextprotocol.io) client) work with a running Arma 3 game: run SQF and get the result back as JSON, inspect units, vehicles, groups, markers and config, request cropped map images, spawn and move things, change time and weather, and read the RPT log. It also works in the Eden editor, where it can place, change, connect and delete editor entities like you would by hand.
 
 ```
 MCP client ──stdio──> arma3-mcp (Python) ──TCP 127.0.0.1:9120──> arma3_mcp_x64.dll ──callExtension──> @arma3_mcp addon (SQF)
@@ -32,7 +32,7 @@ Every build on GitHub Actions uploads an `@arma3_mcp` artifact, the finished mod
 - **Singleplayer / editor / hosting**: load it like any local mod (`-mod=@arma3_mcp`, or add it as a local mod in the launcher). Extensions that are not whitelisted are blocked by BattlEye, so start the game with BattlEye off.
 - **Dedicated server**: `arma3server_x64.exe -serverMod=@arma3_mcp ...`. Clients need nothing installed.
 
-When a mission starts, the RPT log says `[arma3_mcp] listening on 127.0.0.1:9120`. The bridge works while a mission runs: editor preview, singleplayer, a hosted game or a dedicated server. In the main menu and the editor itself (not previewing) nothing answers.
+When a mission starts, the RPT log says `[arma3_mcp] listening on 127.0.0.1:9120`. The bridge works while a mission runs (editor preview, singleplayer, a hosted game or a dedicated server) and in the Eden editor itself, where the RPT says `listening on 127.0.0.1:9120 (Eden editor)`. Only the main menu has nothing that answers.
 
 ### The MCP server
 
@@ -109,6 +109,26 @@ Options (each also has an environment variable):
 | `list_mods` | Loaded mods. |
 | `read_rpt` / `list_rpt_files` | The end of the RPT log, filtered by regex or to script errors only. |
 
+### In the Eden editor
+
+The tools above work in the editor too, but what `create_object` and the like make is not part of the scenario: the editor does not save it. To edit the scenario, use the `eden_*` tools, which go through the editor's own commands (`create3DENEntity`, `set3DENAttribute`, ...), so the changes are saved with the scenario and can be undone with Ctrl+Z. They refer to entities by their Eden id (`get3DENEntityID`), markers also by name.
+
+| Tool | What it does |
+|---|---|
+| `eden_info` | Scenario, world, camera, what the screen centre points at, entity counts, how many are selected. |
+| `eden_list_entities` | Objects, groups, triggers, logics (modules), waypoints, markers and comments, with Eden id, class, name, position and rotation. |
+| `eden_get_entity` | One entity's attributes (every attribute its attribute window has, or the ones asked for) and its connections. |
+| `eden_create_entity` | Place an object, unit, trigger, module, waypoint, marker or comment, optionally with attributes set. |
+| `eden_set_attributes` | Set attributes (position, rotation, name, init, skill, ...) on one or more entities, in one undo step. |
+| `eden_delete_entities` | Delete entities. |
+| `eden_selection` | What the user has selected, or select entities. |
+| `eden_connect` | Sync, group, trigger owner, waypoint activation and random start connections, added or removed. |
+| `eden_mission_attribute` | Read or set the scenario's attributes (name, multiplayer settings, date, weather, ...). |
+| `eden_camera` | Move the editor camera to a position or an entity. |
+| `eden_action` | Editor actions such as `MissionSave`, `MissionPreview`, `Undo`, `Redo` (`do3DENAction`). |
+
+`mission_info` and `game_status` (`game.eden`) say whether the editor is open. During a preview the `eden_*` tools refuse, and the mission tools work as in any mission.
+
 Objects are referred to by netId (`"2:345"`, as the list tools return them), a global variable name, or `"player"`.
 
 ### `map_tile`
@@ -175,5 +195,5 @@ In the game, a request triggers the `ExtensionCallback` mission event, and `a3mc
 
 - **`Cannot reach the Arma 3 extension`**: the game is not running with the mod, or no mission has started yet, or the port is taken. Look for `[arma3_mcp]` in the RPT.
 - **`callExtension error ...` / `could not be loaded` in the RPT**: BattlEye blocked it (turn it off for local play), or on Linux the `.so` is not next to `addons/` (`ldd arma3_mcp_x64.so` shows what it misses).
-- **`No answer from the game ... not polling`**: you are in the main menu or the editor without previewing; start the mission.
+- **`No answer from the game ... not polling`**: you are in the main menu; open the editor or start a mission. If this happens in the editor, look for `[arma3_mcp]` in the RPT: the editor starts the bridge when it opens, loads or creates a scenario, changes terrain, and when a preview ends.
 - **Timeouts with `scheduled: true`**: the script is still running; raise `timeout`.
