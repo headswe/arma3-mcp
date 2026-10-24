@@ -4,7 +4,7 @@ class CfgPatches {
         units[] = {};
         weapons[] = {};
         requiredVersion = 2.18;  // toJSON / fromJSON
-        requiredAddons[] = {"A3_Functions_F"};
+        requiredAddons[] = {"A3_Functions_F", "3DEN"};
         author = "headswe";
         version = "0.1";
         versionStr = "0.1.0";
@@ -26,6 +26,21 @@ class CfgFunctions {
             class expireRemote {};
             class execute { headerType = -1; };    // sent to other machines as code, so no function header
             class remoteRun { headerType = -1; };  // sent to other machines as code, so no function header
+        };
+    };
+};
+
+// The Eden editor runs no postInit functions of its own, so the bridge is started from its events
+// too. Each waits until the function library is ready; a3mcp_fnc_init skips what is already running.
+#define A3MCP_EDEN_INIT "0 spawn { waitUntil { !isNil 'a3mcp_fnc_init' }; isNil { call a3mcp_fnc_init } }"
+class Cfg3DEN {
+    class EventHandlers {
+        class arma3_mcp {
+            init = A3MCP_EDEN_INIT;
+            onTerrainNew = A3MCP_EDEN_INIT;
+            onMissionNew = A3MCP_EDEN_INIT;
+            onMissionLoad = A3MCP_EDEN_INIT;
+            onMissionPreviewEnd = A3MCP_EDEN_INIT;
         };
     };
 };

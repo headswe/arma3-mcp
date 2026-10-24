@@ -29,7 +29,7 @@ from . import __version__
 from .bridge import Bridge, BridgeError
 from .map_tile import crop_svg, find_icon_png, find_world_svg, svg_extent
 from .rpt import RptReader
-from .sqf import RESOLVE, side_name, strip_comments
+from .sqf import EDEN, RESOLVE, side_name, strip_comments
 
 INSTRUCTIONS = """\
 Controls a running Arma 3 game through the arma3_mcp extension.
@@ -61,6 +61,10 @@ Controls a running Arma 3 game through the arma3_mcp extension.
   confirms the passengers are no longer in the helicopter and are at the intended landing area.
 - map_tile clips a diag_exportTerrainSvg map to world bounds and overlays live tactical objects.
   Extracted config icons are used when available; directional marker icons follow markerDir.
+- The bridge also answers in the Eden editor (game_status shows game.eden). There, edit the
+  scenario with the eden_* tools: they work on Eden entities, are saved with the scenario and
+  can be undone. create_object and the other mission tools make temporary objects the editor
+  does not save. eden_selection tells you what the user has selected.
 - Check game_status first if requests time out.
 """
 
@@ -194,6 +198,7 @@ createHashMapFromArray [
     ["dedicated", isDedicated],
     ["is_server", isServer],
     ["has_interface", hasInterface],
+    ["editor", is3DEN && {!is3DENPreview}],
     ["editor_preview", is3DENPreview],
     ["time", time],
     ["server_time", serverTime],
@@ -1114,6 +1119,371 @@ true
         [name],
     )
     return f"deleted {name}"
+
+
+# ---------------------------------------------------------------- Eden editor
+
+EdenRef = int | str
+_EDEN_KINDS = ("object", "group", "trigger", "logic", "waypoint", "marker", "comment")
+_EDEN_MODES = {"object": "Object", "trigger": "Trigger", "logic": "Logic", "waypoint": "Waypoint", "marker": "Marker", "comment": "Comment"}
+
+
+def _eden_ref(ref: EdenRef) -> EdenRef:
+    if isinstance(ref, str) and ref.strip().lstrip("-").isdigit():
+        return int(ref)
+    return ref
+
+
+def _eden_refs(refs: list[EdenRef] | EdenRef) -> list[EdenRef]:
+    if not isinstance(refs, list):
+        refs = [refs]
+    if not refs:
+        raise ToolError("give at least one Eden entity id")
+    return [_eden_ref(r) for r in refs]
+
+
+async def _eden(code: str, args: Any = None) -> Any:
+    """Runs a tool's SQF in the editor with the Eden helpers in scope."""
+    return await _run(EDEN + code, args)
+
+
+@mcp.tool()
+async def eden_info() -> dict:
+    """The Eden editor's state: scenario, world, camera, what the screen centre points at, and how
+    many objects, groups, triggers, logics, waypoints, markers and comments the scenario has, and
+    how many are selected. Fails when the editor is not open (in a running mission, say)."""
+    return await _eden(
+        """
+private _all = all3DENEntities;
+private _entities = [];
+{ _entities append _x } forEach ((_all select [0, 6]) + [_all param [7, []]]);
+private _counts = createHashMap;
+{ private _k = _x call _edenKind; _counts set [_k, (_counts getOrDefault [_k, 0]) + 1] } forEach _entities;
+private _selected = 0;
+{ _selected = _selected + count _x } forEach get3DENSelected "";
+private _cam = get3DENCamera;
+createHashMapFromArray [
+    ["scenario", missionName],
+    ["world", worldName],
+    ["world_size", worldSize],
+    ["camera", createHashMapFromArray [
+        ["position", getPosASL _cam call _round],
+        ["direction", round getDir _cam],
+        ["looking_at", screenToWorld [0.5, 0.5] call _round]
+    ]],
+    ["counts", _counts],
+    ["selected", _selected]
+]
+"""
+    )
+
+
+@mcp.tool()
+async def eden_list_entities(kind: str = "", contains: str = "", limit: int = 200) -> dict:
+    """List the entities of the scenario open in the Eden editor, with their Eden ids.
+
+    Each has id, kind, class (type; side for a group; waypoint type; marker type), name (variable
+    name; callsign for a group; marker name), position and rotation, plus a unit's group, a
+    vehicle's crew, and a group's units and waypoints, all as Eden ids.
+
+    Args:
+        kind: Only this kind: object, group, trigger, logic, waypoint, marker or comment.
+        contains: Only entities whose class or name contains this text (case-insensitive).
+        limit: At most this many.
+    """
+    kind = kind.strip().lower()
+    if kind and kind not in _EDEN_KINDS:
+        raise ToolError(f"kind must be one of {', '.join(_EDEN_KINDS)}")
+    return await _eden(
+        """
+params ["_kind", "_contains", "_limit"];
+private _all = all3DENEntities;
+private _list = [];
+{ _list append (_x apply { _x call _edenBrief }) } forEach ((_all select [0, 6]) + [_all param [7, []]]);
+if (_kind != "") then { _list = _list select { (_x get "kind") == _kind } };
+if (_contains != "") then {
+    private _c = toLower _contains;
+    _list = _list select { (toLower str (_x getOrDefault ["class", ""])) find _c >= 0 || {(toLower str (_x getOrDefault ["name", ""])) find _c >= 0} };
+};
+createHashMapFromArray [["count", count _list], ["entities", _list select [0, _limit]]]
+""",
+        [kind, contains, limit],
+    )
+
+
+@mcp.tool()
+async def eden_get_entity(id: EdenRef, attributes: list[str] | None = None) -> dict:
+    """Everything about one Eden entity: its summary, its connections (sync, group, trigger owner,
+    ...), and its attribute values as the editor's attribute window has them.
+
+    Args:
+        id: The entity's Eden id (from eden_list_entities), or a marker's name.
+        attributes: Only these attribute properties (e.g. ["name", "init", "position"]). By
+            default every attribute the entity has: the Cfg3DEN ones for its kind plus the ones
+            its class adds.
+    """
+    return await _eden(
+        """
+params ["_ref", "_names"];
+private _e = _ref call _edenNeed;
+private _kind = _e call _edenKind;
+private _info = _e call _edenBrief;
+if (_names isEqualTo []) then {
+    private _cfgs = configProperties [configFile >> "Cfg3DEN" >> (_kind call _edenSection) >> "AttributeCategories", "isClass _x"];
+    {
+        { _names pushBackUnique getText (_x >> "property") } forEach configProperties [_x >> "Attributes", "isClass _x"];
+    } forEach _cfgs;
+    if (_e isEqualType objNull) then {
+        { _names pushBackUnique getText (_x >> "property") } forEach configProperties [configOf _e >> "Attributes", "isClass _x"];
+    };
+    _names = _names - [""];
+};
+private _values = createHashMap;
+{
+    private _v = _e get3DENAttribute _x;
+    if (_v isNotEqualTo [] && {!isNil { _v select 0 }}) then { _values set [_x, _v select 0] };
+} forEach _names;
+_info set ["attributes", _values];
+_info set ["connections", (get3DENConnections _e) apply { [_x select 0, get3DENEntityID (_x select 1)] }];
+_info
+""",
+        [_eden_ref(id), attributes or []],
+    )
+
+
+@mcp.tool()
+async def eden_create_entity(
+    kind: str,
+    class_name: str,
+    position: list[float] | None = None,
+    attributes: dict[str, Any] | None = None,
+    group: EdenRef | None = None,
+) -> dict:
+    """Place a new entity in the Eden editor, the way dragging it in from the asset browser does
+    (it is saved with the scenario and can be undone with eden_action("Undo")).
+
+    Args:
+        kind: object (vehicles, props and units; a unit gets a new group unless `group` is
+            given), trigger, logic (modules), waypoint, marker or comment.
+        class_name: CfgVehicles class for object/logic (e.g. "B_Soldier_F", "ModuleCurator_F"),
+            "EmptyDetector" (or another trigger class) for a trigger, a waypoint type for a
+            waypoint (e.g. "Move", "SeekAndDestroy", "TR UNLOAD"), a CfgMarkers class for a
+            marker (e.g. "mil_dot"), "" for a comment.
+        position: [x, y] or [x, y, z] (z above the terrain). Default: where the screen centre
+            points.
+        attributes: Attribute values to set after placing it, e.g. {"name": "hq", "init":
+            "this allowDamage false;", "rotation": [0, 0, 90]} (see eden_get_entity for names).
+        group: Eden id of a group to add a unit or waypoint to. Required for waypoints.
+    """
+    kind = kind.strip().lower()
+    if kind not in _EDEN_MODES:
+        raise ToolError(f"kind must be one of {', '.join(_EDEN_MODES)}")
+    if kind == "waypoint" and group is None:
+        raise ToolError("a waypoint needs the Eden id of its group")
+    return await _eden(
+        """
+params ["_mode", "_class", "_pos", "_attrs", "_groupRef"];
+if (_pos isEqualTo []) then { _pos = screenToWorld [0.5, 0.5] };
+_pos = +_pos;
+if (count _pos == 2) then { _pos pushBack 0 };
+if (_mode in ["Object", "Logic"] && {!isClass (configFile >> "CfgVehicles" >> _class)}) then {
+    throw format ["%1 is not a CfgVehicles class (see search_classes)", _class];
+};
+if (_mode == "Marker" && {!isClass (configFile >> "CfgMarkers" >> _class)}) then {
+    throw format ["%1 is not a CfgMarkers class", _class];
+};
+private _e = if (_groupRef isEqualTo -1) then {
+    create3DENEntity [_mode, _class, _pos]
+} else {
+    private _g = _groupRef call _edenNeed;
+    if !(_g isEqualType grpNull) then { throw format ["%1 is not a group", _groupRef] };
+    _g create3DENEntity [_mode, _class, _pos]
+};
+if (isNil "_e" || {_e isEqualTo objNull} || {_e isEqualTo grpNull} || {_e isEqualTo ""} || {_e isEqualTo []}) then {
+    throw format ["the editor did not create %1 %2", _mode, _class];
+};
+private _failed = [];
+{ if !(_e set3DENAttribute [_x, _y]) then { _failed pushBack _x } } forEach _attrs;
+private _info = _e call _edenBrief;
+if (_failed isNotEqualTo []) then { _info set ["attributes_not_set", _failed] };
+_info
+""",
+        [_EDEN_MODES[kind], class_name, position or [], attributes or {}, -1 if group is None else _eden_ref(group)],
+    )
+
+
+@mcp.tool()
+async def eden_set_attributes(ids: list[EdenRef], attributes: dict[str, Any]) -> dict:
+    """Set attributes on one or more Eden entities in a single undo step, like changing them in
+    the attribute window. Returns each entity's new values, read back from the editor.
+
+    Args:
+        ids: Eden ids (or marker names) of the entities to change.
+        attributes: Attribute property -> value, e.g. {"position": [1200, 3400, 0],
+            "rotation": [0, 0, 180], "name": "convoy_lead", "init": "...", "allowDamage": false,
+            "skill": 0.6, "ControlSP": true, "markerText": "LZ"} (see eden_get_entity).
+    """
+    if not attributes:
+        raise ToolError("give at least one attribute")
+    return await _eden(
+        """
+params ["_refs", "_attrs"];
+private _ents = _refs apply { _x call _edenNeed };
+private _ok = set3DENAttributes ((keys _attrs) apply { [_ents, _x, _attrs get _x] });
+createHashMapFromArray [
+    ["ok", if (isNil "_ok") then { true } else { _ok }],
+    ["entities", _ents apply {
+        private _e = _x;
+        private _values = createHashMap;
+        { private _v = _e get3DENAttribute _x; if (_v isNotEqualTo [] && {!isNil { _v select 0 }}) then { _values set [_x, _v select 0] } } forEach keys _attrs;
+        createHashMapFromArray [["id", get3DENEntityID _e], ["attributes", _values]]
+    }]
+]
+""",
+        [_eden_refs(ids), attributes],
+    )
+
+
+@mcp.tool()
+async def eden_delete_entities(ids: list[EdenRef]) -> dict:
+    """Delete Eden entities (one undo step). Deleting a group deletes its units and waypoints."""
+    return await _eden(
+        """
+params ["_refs"];
+private _ents = _refs apply { _x call _edenNeed };
+private _deleted = _ents apply { _x call _edenBrief };
+delete3DENEntities _ents;
+createHashMapFromArray [["deleted", _deleted]]
+""",
+        [_eden_refs(ids)],
+    )
+
+
+@mcp.tool()
+async def eden_selection(select: list[EdenRef] | None = None) -> dict:
+    """The entities selected in the Eden editor, which is what the user means by "this" or "these".
+    With `select`, selects those entities instead (an empty list clears the selection)."""
+    return await _eden(
+        """
+params ["_set", "_refs"];
+if (_set) then { set3DENSelected (_refs apply { _x call _edenNeed }) };
+private _sel = [];
+{ _sel append _x } forEach get3DENSelected "";
+createHashMapFromArray [["count", count _sel], ["entities", _sel apply { _x call _edenBrief }]]
+""",
+        [select is not None, [_eden_ref(r) for r in select or []]],
+    )
+
+
+@mcp.tool()
+async def eden_connect(kind: str, from_ids: list[EdenRef], to_id: EdenRef, remove: bool = False) -> dict:
+    """Connect Eden entities, or with `remove` disconnect them.
+
+    Args:
+        kind: "Sync" (synchronize, e.g. a module to units or two waypoints), "Group" (a unit joins
+            the target's group), "TriggerOwner", "WaypointActivation" or "RandomStart".
+        from_ids: The entities the connection starts at.
+        to_id: The entity it goes to.
+    Returns the target's connections afterwards.
+    """
+    return await _eden(
+        """
+params ["_kind", "_fromRefs", "_toRef", "_remove"];
+private _from = _fromRefs apply { _x call _edenNeed };
+private _to = _toRef call _edenNeed;
+private _ok = if (_remove) then { remove3DENConnection [_kind, _from, _to] } else { add3DENConnection [_kind, _from, _to] };
+createHashMapFromArray [
+    ["ok", if (isNil "_ok") then { true } else { _ok }],
+    ["connections", (get3DENConnections _to) apply { [_x select 0, get3DENEntityID (_x select 1)] }]
+]
+""",
+        [kind, _eden_refs(from_ids), _eden_ref(to_id), remove],
+    )
+
+
+@mcp.tool()
+async def eden_mission_attribute(section: str, name: str = "", value: Any = None) -> dict:
+    """Read or set the scenario's own attributes (Attributes menu: General, Multiplayer,
+    Environment, ...).
+
+    Args:
+        section: "Scenario", "Multiplayer", "Intel" (date, time, weather), "GarbageCollection",
+            or another class in Cfg3DEN >> Mission.
+        name: The attribute property, e.g. "IntelBriefingName", "MaxPlayers", "IntelTimeOfChanges".
+            Empty lists every attribute in the section with its value.
+        value: Sets the attribute to this value when given.
+    """
+    return await _eden(
+        """
+params ["_section", "_name", "_set", "_value"];
+if (_set) then {
+    if (_name == "") then { throw "give the attribute name to set" };
+    _section set3DENMissionAttribute [_name, _value];
+};
+private _names = [_name];
+if (_name == "") then {
+    _names = [];
+    {
+        { _names pushBackUnique getText (_x >> "property") } forEach configProperties [_x >> "Attributes", "isClass _x"];
+    } forEach configProperties [configFile >> "Cfg3DEN" >> "Mission" >> _section >> "AttributeCategories", "isClass _x"];
+    _names = _names - [""];
+    if (_names isEqualTo []) then { throw format ["no attributes in Cfg3DEN >> Mission >> %1", _section] };
+};
+private _values = createHashMap;
+{
+    private _v = _section get3DENMissionAttribute _x;
+    if (!isNil "_v") then { _values set [_x, _v] };
+} forEach _names;
+_values
+""",
+        [section, name, value is not None, "" if value is None else value],
+    )
+
+
+@mcp.tool()
+async def eden_action(action: str) -> str:
+    """Run an editor action (do3DENAction), as from the editor's menus and shortcuts, e.g.
+    "MissionSave", "MissionPreview", "MissionPreviewMP", "Undo", "Redo". The full list is on the
+    BIKI do3DENAction page. While a preview runs, the eden_* tools are unavailable (the other
+    tools work in the preview as in any mission)."""
+    await _eden(
+        """
+params ["_action"];
+do3DENAction _action;
+true
+""",
+        [action],
+    )
+    return f"ran {action}"
+
+
+@mcp.tool()
+async def eden_camera(position: list[float] | None = None, entity: EdenRef | None = None) -> dict:
+    """Move the Eden editor camera to a position [x, y(, z)] or to an entity, so the user sees it.
+    With neither, returns where the camera is."""
+    return await _eden(
+        """
+params ["_pos", "_ref"];
+if (_ref isNotEqualTo -1) then {
+    private _e = _ref call _edenNeed;
+    _pos = [_e, "position", []] call _edenAttr;
+    if (_pos isEqualTo [] && {_e isEqualType grpNull}) then { _pos = getPosATL leader _e };
+    if (_pos isEqualTo []) then { throw format ["%1 has no position", _ref] };
+};
+if (_pos isNotEqualTo []) then {
+    _pos = +_pos;
+    if (count _pos == 2) then { _pos pushBack 0 };
+    move3DENCamera [_pos, true];
+};
+private _cam = get3DENCamera;
+createHashMapFromArray [
+    ["position", getPosASL _cam call _round],
+    ["direction", round getDir _cam],
+    ["looking_at", screenToWorld [0.5, 0.5] call _round]
+]
+""",
+        [position or [], -1 if entity is None else _eden_ref(entity)],
+    )
 
 
 # ---------------------------------------------------------------- diagnostics

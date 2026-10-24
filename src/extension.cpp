@@ -1,8 +1,9 @@
 // Arma 3 callExtension entry points for the MCP bridge.
 //
-//   "arma3_mcp" callExtension ["start", [isServer, hasInterface, isDedicated, missionName, worldName]]
+//   "arma3_mcp" callExtension ["start", [isServer, hasInterface, isDedicated, missionName, worldName, eden]]
 //        -> "listening on 127.0.0.1:9120" (return code 0), or why not (return code 1). Safe to call
-//           every mission; requests the previous mission picked up but never answered are failed.
+//           every mission and editor event; eden is true while the Eden editor is open (not
+//           previewing). Requests the previous mission picked up but never answered are failed.
 //   "arma3_mcp" callExtension ["poll", []]           -> "" when idle, or "<id>:<bytes>" of the next request
 //   "arma3_mcp" callExtension ["read", [id]]         -> the next piece of that request's JSON; return code 10
 //                                                       while more follows, 0 on the last piece
@@ -97,7 +98,8 @@ int start(char* output, unsigned int size, const char** argv, unsigned int argc)
     bridge().set_game_info("{\"is_server\":" + std::string(is_server ? "true" : "false") +
                            ",\"has_interface\":" + (arg(1) == "true" ? "true" : "false") +
                            ",\"dedicated\":" + (arg(2) == "true" ? "true" : "false") + ",\"mission\":" + json_string(arg(3)) +
-                           ",\"world\":" + json_string(arg(4)) + "}");
+                           ",\"world\":" + json_string(arg(4)) +
+                           ",\"eden\":" + (arg(5) == "true" ? "true" : "false") + "}");
     bridge().reset("the mission ended before the request finished");
 
     a3mcp::config cfg = a3mcp::load_config(module_dir());

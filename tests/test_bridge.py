@@ -221,6 +221,21 @@ class BridgeTest(GameTestCase):
         self.assertEqual(st["game"]["world"], "Stratis")
         self.assertLess(st["last_poll_ms_ago"], 2000)
 
+    def test_status_reports_eden(self):
+        async def status():
+            b = self.bridge()
+            try:
+                return await b.status()
+            finally:
+                await b.close()
+
+        self.game.call("start", True, True, False, "eden.Stratis", "Stratis", True)
+        try:
+            self.assertTrue(self.run_async(status())["game"]["eden"])
+        finally:
+            self.game.call("start", True, True, False, "test.Stratis", "Stratis")
+        self.assertFalse(self.run_async(status())["game"]["eden"], "missions started without the flag are not Eden")
+
     def test_wrong_token_is_refused(self):
         async def go():
             b = self.bridge(token="wrong")
@@ -341,6 +356,26 @@ class McpServerTest(GameTestCase):
         code, args, scheduled, target = self.run_async(go())
         self.assertIn("private _resolve", code)
         self.assertEqual((args, scheduled, target), (["x"], False, "server"))
+
+
+    def test_eden_tool_sends_eden_prelude(self):
+        from arma3_mcp import server
+
+        async def go():
+            server.bridge.__init__("127.0.0.1", self.port, "secret")
+            return await server.eden_create_entity("Waypoint", "Move", [1, 2], group="17")
+
+        code, args, scheduled, target = self.run_async(go())
+        self.assertIn("is3DEN", code)
+        self.assertIn("private _edenNeed", code)
+        self.assertIn("private _resolve", code)
+        self.assertEqual(args, ["Waypoint", "Move", [1, 2], {}, 17])
+
+    def test_eden_waypoint_needs_group(self):
+        from arma3_mcp import server
+
+        with self.assertRaisesRegex(Exception, "group"):
+            self.run_async(server.eden_create_entity("waypoint", "Move"))
 
 
 class StripCommentsTest(unittest.TestCase):
