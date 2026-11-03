@@ -9,3 +9,13 @@ minor = 1
 patch = 0
 build = 0
 git_hash = 0
+
+# Ship the extension and its settings next to the addons, where callExtension looks for them.
+# The binaries are not in git: build them (see README) or take them from a CI build, and put
+# them in the project root.
+[files]
+include = [
+    "arma3_mcp_x64.dll",
+    "arma3_mcp_x64.so",
+    "arma3_mcp.ini",
+]

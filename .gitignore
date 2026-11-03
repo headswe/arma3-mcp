@@ -9,3 +9,7 @@ __pycache__/
 *.egg-info/
 .venv/
 dist/
+
+# Extension binaries copied into the root for `hemtt dev` / `hemtt launch`
+/arma3_mcp_x64.dll
+/arma3_mcp_x64.so

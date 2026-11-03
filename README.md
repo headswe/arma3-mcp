@@ -169,6 +169,8 @@ cmake --build out --config Release
 python tools/pack_mod.py out build/Release/arma3_mcp_x64.dll [build/Release/arma3_mcp_x64.so]
 ```
 
+To try the mod in the game, put `arma3_mcp_x64.dll` in the project root (from your own build or the `@arma3_mcp` CI artifact; it is git-ignored) and run `hemtt launch eden`. HEMTT builds the addon, copies the extension and `arma3_mcp.ini` next to it, and starts Arma 3 without BattlEye in the Eden editor on an empty VR mission (`.hemtt/missions/eden.VR`), where the bridge listens straight away. Plain `hemtt launch` stops at the main menu.
+
 `hemtt check` lints the SQF and config. `python -m unittest discover -s tests` loads the built extension into a simulated game (it plays the addon's part through the real callExtension entry points, with the engine's 10 KB output buffer and its argument quoting) and runs the MCP server's client against it: round trips, multi-megabyte UTF-8 requests and results, concurrent and timed-out requests, tokens, and mission restarts. Set `A3MCP_LIB` to test a library somewhere else.
 
 The GitHub Actions workflow in `.github/workflows/build.yml` builds the Windows DLL and the Linux `.so` (on Ubuntu 20.04, so it loads on glibc 2.31+), runs the tests against both, and uploads the `@arma3_mcp` mod folder.

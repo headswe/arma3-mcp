@@ -1,0 +1,11 @@
+# `hemtt launch [profile]` builds the mod and starts Arma 3 with it, BattlEye off so the
+# extension loads. HEMTT already passes -skipIntro -noSplash -showScriptErrors -debug -filePatching.
+# The extension binary must be in the project root first; see [files] in project.toml.
+
+# `hemtt launch`: straight to the main menu.
+[default]
+
+# `hemtt launch eden`: opens an empty VR mission in the Eden editor, where the bridge
+# starts listening on 127.0.0.1:9120 right away.
+[eden]
+mission = "eden.VR"
